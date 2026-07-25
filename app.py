@@ -9,12 +9,14 @@ Deploy:
 
 Seguridad:
   - Rate limiting: max 30 req/min por IP en el webhook POST
-  - Verificación de firma HMAC-SHA256 de YCloud (header X-YCloud-Signature-256)
-    Requiere variable de entorno: YCLOUD_WEBHOOK_SECRET
+  - Verificación de firma Svix (usado por YCloud)
+    Requiere variable de entorno: YCLOUD_WEBHOOK_SECRET (el whsec_... de YCloud)
 """
 import hmac
 import hashlib
+import base64
 import os
+import json
 
 from flask import Flask, request, abort
 from flask_limiter import Limiter
@@ -37,28 +39,52 @@ limiter = Limiter(
 YCLOUD_WEBHOOK_SECRET = os.environ.get("YCLOUD_WEBHOOK_SECRET", "")
 
 
-def _verificar_firma_ycloud(payload_bytes: bytes) -> bool:
+def _verificar_firma_svix(payload_bytes: bytes) -> bool:
     """
-    YCloud firma el body con HMAC-SHA256 usando tu webhook secret.
-    Header: X-YCloud-Signature-256  →  sha256=<hex>
-    Si no está configurado el secret, se omite la verificación (dev mode).
+    YCloud usa Svix para firmar webhooks.
+    Headers requeridos: svix-id, svix-timestamp, svix-signature
+    Secret: el whsec_... que aparece en YCloud → Webhooks → Secreto
+
+    Si YCLOUD_WEBHOOK_SECRET no está configurado, se omite la verificación.
     """
     if not YCLOUD_WEBHOOK_SECRET:
         print("[SECURITY] YCLOUD_WEBHOOK_SECRET no configurado — verificación omitida")
         return True
 
-    firma_header = request.headers.get("X-YCloud-Signature-256", "")
-    if not firma_header.startswith("sha256="):
+    svix_id        = request.headers.get("svix-id", "")
+    svix_timestamp = request.headers.get("svix-timestamp", "")
+    svix_signature = request.headers.get("svix-signature", "")
+
+    if not svix_id or not svix_timestamp or not svix_signature:
+        print("[SECURITY] Headers Svix ausentes")
         return False
 
-    firma_recibida = firma_header[len("sha256="):]
-    firma_esperada = hmac.new(
-        YCLOUD_WEBHOOK_SECRET.encode(),
-        payload_bytes,
-        hashlib.sha256,
-    ).hexdigest()
+    # Svix firma: HMAC-SHA256("{svix-id}.{svix-timestamp}.{body}")
+    # con el secret decodificado de base64 (sin el prefijo "whsec_")
+    signed_payload = f"{svix_id}.{svix_timestamp}.".encode() + payload_bytes
 
-    return hmac.compare_digest(firma_recibida, firma_esperada)
+    secret_bytes = YCLOUD_WEBHOOK_SECRET
+    if secret_bytes.startswith("whsec_"):
+        secret_bytes = secret_bytes[len("whsec_"):]
+    secret_decoded = base64.b64decode(secret_bytes)
+
+    firma_esperada = base64.b64encode(
+        hmac.new(secret_decoded, signed_payload, hashlib.sha256).digest()
+    ).decode()
+
+    # svix-signature puede tener múltiples firmas separadas por espacio: "v1,xxxx v1,yyyy"
+    firmas_recibidas = [
+        sig.split(",", 1)[1]
+        for sig in svix_signature.split(" ")
+        if "," in sig
+    ]
+
+    for firma in firmas_recibidas:
+        if hmac.compare_digest(firma, firma_esperada):
+            return True
+
+    print("[SECURITY] Firma Svix inválida")
+    return False
 
 
 # ── Rutas ──────────────────────────────────────────────────────────────────────
@@ -78,11 +104,9 @@ def verificar_webhook():
 def recibir_mensaje():
     payload_bytes = request.get_data()
 
-    if not _verificar_firma_ycloud(payload_bytes):
-        print("[SECURITY] Firma inválida — request rechazado")
+    if not _verificar_firma_svix(payload_bytes):
         abort(401)
 
-    import json
     try:
         payload = json.loads(payload_bytes) if payload_bytes else {}
     except Exception:
