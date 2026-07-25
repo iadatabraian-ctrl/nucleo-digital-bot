@@ -1,11 +1,5 @@
 """
-app.py
--------
-Webhook Flask. Recibe mensajes de WhatsApp via YCloud → brain.py → respuesta.
-
-Deploy:
-  - Local: flask run  (+ ngrok para exponer el webhook)
-  - Render: gunicorn app:app  (usa render.yaml)
+app.py — DEBUG MODE (temporal para inspeccionar payloads de YCloud)
 """
 import os
 import json
@@ -20,7 +14,6 @@ from agent.brain import responder
 
 app = Flask(__name__)
 
-# ── Rate limiting ──────────────────────────────────────────────────────────────
 limiter = Limiter(
     key_func=get_remote_address,
     app=app,
@@ -28,8 +21,6 @@ limiter = Limiter(
     storage_uri="memory://",
 )
 
-
-# ── Rutas ──────────────────────────────────────────────────────────────────────
 
 @app.route("/webhook", methods=["GET"])
 def verificar_webhook():
@@ -43,18 +34,16 @@ def verificar_webhook():
 @app.route("/webhook", methods=["POST"])
 @limiter.limit("30 per minute")
 def recibir_mensaje():
-    # Log temporal para ver qué headers de firma manda YCloud
-    headers_relevantes = {k: v for k, v in request.headers if k.lower().startswith(("svix", "x-ycloud", "x-hub", "webhook"))}
-    if headers_relevantes:
-        print(f"[DEBUG headers firma] {headers_relevantes}")
-    else:
-        print("[DEBUG] YCloud no mandó headers de firma reconocidos")
-
     payload_bytes = request.get_data()
+
     try:
         payload = json.loads(payload_bytes) if payload_bytes else {}
     except Exception:
         payload = {}
+
+    # ── DEBUG: loguear payload completo ──────────────────────────────────────
+    print(f"[DEBUG PAYLOAD] {json.dumps(payload, ensure_ascii=False)[:2000]}")
+    # ─────────────────────────────────────────────────────────────────────────
 
     mensaje = proveedor_activo.parsear_mensaje_entrante(payload)
 
