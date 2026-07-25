@@ -1,3 +1,3 @@
-from .meta import MetaProvider
+from .ycloud import YCloudProvider
 
-proveedor_activo = MetaProvider()
+proveedor_activo = YCloudProvider()
