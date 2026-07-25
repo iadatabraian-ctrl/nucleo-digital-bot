@@ -1,1 +1,3 @@
-# agent/providers/__init__.py
+from .meta import MetaProvider
+
+proveedor_activo = MetaProvider()
