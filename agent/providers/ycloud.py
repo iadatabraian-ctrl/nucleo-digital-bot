@@ -86,18 +86,17 @@ class YCloudProvider(ProveedorWhatsApp):
             if tipo == "text":
                 texto = msg.get("text", {}).get("body", "")
 
-            elif tipo == "audio":
-                audio_obj = msg.get("audio", {})
-                url       = audio_obj.get("url", "")
-                mime_type = audio_obj.get("mimeType", "audio/ogg")
+       elif tipo == "audio":
+            audio_obj = msg.get("audio", {})
+            url       = audio_obj.get("link", "")
+            mime_type = audio_obj.get("mime_type", "audio/ogg")
 
-                if url:
-                    texto = _transcribir_audio(url, mime_type)
-                    if not texto:
-                        texto = "__AUDIO_NO_TRANSCRIPTO__"
-                else:
+            if url:
+                texto = _transcribir_audio(url, mime_type)
+                if not texto:
                     texto = "__AUDIO_NO_TRANSCRIPTO__"
-
+            else:
+                texto = "__AUDIO_NO_TRANSCRIPTO__"
             else:
                 return None
 
