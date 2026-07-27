@@ -2,10 +2,13 @@
 agent/providers/ycloud.py
 --------------------------
 Implementación contra YCloud API (WhatsApp Coexistence).
-Incluye transcripción de audios via Groq Whisper y deduplicación de mensajes.
+Incluye transcripción de audios via Groq Whisper, deduplicación de mensajes
+y validación de firma HMAC del webhook.
 """
 import os
 import io
+import hmac
+import hashlib
 import requests
 from .base import ProveedorWhatsApp
 
@@ -13,6 +16,30 @@ YCLOUD_API_BASE = "https://api.ycloud.com/v2"
 
 # Deduplicación: wamids ya procesados (se limpia al reiniciar)
 _wamids_procesados: set[str] = set()
+
+
+def verificar_firma(payload_bytes: bytes, firma_header: str, secret: str) -> bool:
+    """
+    Valida el header 'YCloud-Signature: t={timestamp},s={signature}'.
+    Formato real documentado por YCloud: HMAC-SHA256("{timestamp}.{body}", secret).
+    """
+    if not firma_header or not secret:
+        return False
+
+    try:
+        partes = dict(p.split("=", 1) for p in firma_header.split(","))
+        timestamp = partes.get("t", "")
+        signature = partes.get("s", "")
+    except Exception:
+        return False
+
+    if not timestamp or not signature:
+        return False
+
+    signed_payload = f"{timestamp}.".encode() + payload_bytes
+    esperada = hmac.new(secret.encode(), signed_payload, hashlib.sha256).hexdigest()
+
+    return hmac.compare_digest(esperada, signature)
 
 
 def _transcribir_audio(url: str, mime_type: str = "audio/ogg") -> str:
@@ -131,4 +158,3 @@ class YCloudProvider(ProveedorWhatsApp):
         resp = requests.post(url, headers=headers, json=data, timeout=15)
         if resp.status_code >= 300:
             print(f"[ERROR enviando] {resp.status_code}: {resp.text}")
-            
