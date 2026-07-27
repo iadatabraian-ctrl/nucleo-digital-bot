@@ -1,5 +1,5 @@
 """
-app.py — DEBUG MODE (temporal para inspeccionar payloads de YCloud)
+app.py
 """
 import os
 import json
@@ -10,6 +10,7 @@ from flask_limiter.util import get_remote_address
 
 from agent import config
 from agent.providers import proveedor_activo
+from agent.providers.ycloud import verificar_firma
 from agent.brain import responder
 
 app = Flask(__name__)
@@ -36,14 +37,19 @@ def verificar_webhook():
 def recibir_mensaje():
     payload_bytes = request.get_data()
 
+    # ── Validación de firma HMAC de YCloud ───────────────────────────────────
+    firma_header = request.headers.get("YCloud-Signature", "")
+    secret = os.environ.get("YCLOUD_WEBHOOK_SECRET", "")
+
+    if not verificar_firma(payload_bytes, firma_header, secret):
+        print("[SEGURIDAD] Firma inválida o ausente — request rechazado")
+        return "unauthorized", 401
+    # ─────────────────────────────────────────────────────────────────────────
+
     try:
         payload = json.loads(payload_bytes) if payload_bytes else {}
     except Exception:
         payload = {}
-
-    # ── DEBUG: loguear payload completo ──────────────────────────────────────
-    print(f"[DEBUG PAYLOAD] {json.dumps(payload, ensure_ascii=False)[:2000]}")
-    # ─────────────────────────────────────────────────────────────────────────
 
     mensaje = proveedor_activo.parsear_mensaje_entrante(payload)
 
@@ -80,4 +86,4 @@ def health():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app.run(port=5000)
