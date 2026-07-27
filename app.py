@@ -12,6 +12,7 @@ from agent import config
 from agent.providers import proveedor_activo
 from agent.providers.ycloud import verificar_firma
 from agent.brain import responder
+from agent import memory
 
 app = Flask(__name__)
 
@@ -51,6 +52,22 @@ def recibir_mensaje():
     except Exception:
         payload = {}
 
+    # ── Coexistence: el dueño respondió a mano desde la app ──────────────────
+    numero_pausado = proveedor_activo.parsear_eco_manual(payload)
+    if numero_pausado:
+        texto_eco = (
+            payload.get("whatsappInboundMessage", {}).get("text", {}).get("body", "")
+            or payload.get("message", {}).get("text", {}).get("body", "")
+        )
+        if texto_eco.strip().lower() in ("/bot", "/bot on", "segui vos", "seguí vos"):
+            memory.reanudar_conversacion(numero_pausado)
+            print(f"[coexistence] Bot reactivado manualmente para {numero_pausado}")
+        else:
+            memory.pausar_conversacion(numero_pausado)
+            print(f"[coexistence] Dueño tomó la conversación con {numero_pausado} — bot pausado")
+        return "ok", 200
+    # ──────────────────────────────────────────────────────────────────────────
+
     mensaje = proveedor_activo.parsear_mensaje_entrante(payload)
 
     if mensaje is None:
@@ -58,6 +75,10 @@ def recibir_mensaje():
 
     numero        = mensaje["numero"]
     texto_usuario = mensaje["texto"]
+
+    if memory.esta_pausada(numero):
+        print(f"[coexistence] Conversación pausada, el bot no responde a {numero}")
+        return "ok", 200
 
     if texto_usuario == "__AUDIO_NO_TRANSCRIPTO__":
         proveedor_activo.enviar_mensaje(
