@@ -151,9 +151,13 @@ def recibir_mensaje():
             memory.limpiar_notas_admin()
             proveedor_activo.enviar_mensaje(numero, "Listo, borré todos los avisos del día 👍")
         else:
-            memory.agregar_nota_admin(texto_limpio)
+            fecha_resuelta = memory.agregar_nota_admin(texto_limpio)
+            if fecha_resuelta:
+                aviso_fecha = f"Válido para el {fecha_resuelta.strftime('%d/%m')} — se borra solo después."
+            else:
+                aviso_fecha = "Sin fecha específica — queda activo hasta que me escribas /limpiar."
             proveedor_activo.enviar_mensaje(
-                numero, f"Anotado ✅: \"{texto_limpio}\"\nLo tengo en cuenta para las consultas de hoy."
+                numero, f"Anotado ✅: \"{texto_limpio}\"\n{aviso_fecha}"
             )
         return "ok", 200
     # ──────────────────────────────────────────────────────────────────────────
