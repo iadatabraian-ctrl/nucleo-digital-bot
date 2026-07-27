@@ -1,207 +1,108 @@
 """
-agent/calendar.py
-------------------
-Integración con Google Calendar para:
-  1. Obtener slots disponibles en los próximos N días hábiles
-  2. Crear un evento cuando se agenda una llamada
+agent/config.py
+----------------
+Carga knowledge/business.yaml + knowledge/servicios.md y construye el
+system prompt para Claude. También expone las variables de entorno.
 """
 import os
-import json
-import base64
-from datetime import datetime, timedelta, time
+import yaml
+from pathlib import Path
+from datetime import datetime
 import pytz
+from dotenv import load_dotenv
 
-TIMEZONE = pytz.timezone("America/Montevideo")
+load_dotenv()
 
-HORA_INICIO = time(9, 0)
-HORA_FIN = time(18, 0)
-DURACION_SLOT_MIN = 45
-MARGEN_MIN = 60
+KNOWLEDGE_DIR = Path(__file__).parent.parent / "knowledge"
 
 
-def _get_service():
-    try:
-        from google.oauth2.service_account import Credentials
-        from googleapiclient.discovery import build
-    except ImportError:
-        raise RuntimeError("Faltan dependencias de Google.")
-
-    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
-    if not raw:
-        raise ValueError("Variable GOOGLE_SERVICE_ACCOUNT_JSON no configurada.")
-
-    try:
-        service_account_info = json.loads(raw)
-    except json.JSONDecodeError:
-        service_account_info = json.loads(base64.b64decode(raw).decode())
-
-    scopes = ["https://www.googleapis.com/auth/calendar"]
-    creds = Credentials.from_service_account_info(service_account_info, scopes=scopes)
-    return build("calendar", "v3", credentials=creds, cache_discovery=False)
+def cargar_negocio() -> dict:
+    path = KNOWLEDGE_DIR / "business.yaml"
+    if not path.exists():
+        raise FileNotFoundError("No existe knowledge/business.yaml")
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
 
-def _dias_habiles(desde: datetime, cantidad: int) -> list[datetime]:
-    dias = []
-    cursor = desde.replace(hour=0, minute=0, second=0, microsecond=0)
-    while len(dias) < cantidad:
-        cursor += timedelta(days=1)
-        if cursor.weekday() < 5:
-            dias.append(cursor)
-    return dias
+def cargar_servicios() -> str:
+    path = KNOWLEDGE_DIR / "servicios.md"
+    if path.exists():
+        return path.read_text(encoding="utf-8")
+    return ""
 
 
-def _slots_del_dia(dia: datetime) -> list[datetime]:
-    slots = []
-    cursor = TIMEZONE.localize(datetime.combine(dia.date(), HORA_INICIO))
-    fin_dia = TIMEZONE.localize(datetime.combine(dia.date(), HORA_FIN))
-    delta = timedelta(minutes=DURACION_SLOT_MIN)
-    while cursor + delta <= fin_dia:
-        slots.append(cursor)
-        cursor += delta
-    return slots
+def construir_system_prompt(slots_disponibles: str = "") -> str:
+    negocio = cargar_negocio()
+    servicios = cargar_servicios()
+    hoy = datetime.now(pytz.timezone("America/Montevideo")).strftime("%d/%m/%Y")
+
+    prompt = f"""Sos Nexo, el asistente de WhatsApp de {negocio.get('nombre_negocio', 'Nucleo Digital')}.
+
+Fecha actual: {hoy} — usá siempre este año cuando agendés llamadas.
+
+Tu objetivo: {negocio.get('objetivo', '')}
+
+Tono: {negocio.get('tono', '')}
+
+Horario de atención: {negocio.get('horario_atencion', 'Lunes a viernes, 9:00-18:00 Uruguay')}
+
+---
+
+REGLAS IMPORTANTES:
+- Nunca inventes información que no esté en este contexto.
+- No des precios nunca por WhatsApp — siempre se discuten en la llamada de descubrimiento.
+- Sé breve y natural, como mensajes de WhatsApp reales. Nada de mails formales.
+- Si no sabés algo, decilo y ofrecé que Braian (el fundador) lo aclare en la llamada.
+- No uses markdown (asteriscos, guiones, headers) en tus respuestas — es WhatsApp, no una presentación.
+- Podés usar emojis con moderación para que se lea más natural.
+
+---
+
+FLUJO ESPERADO DE CONVERSACIÓN:
+1. El cliente escribe → escuchás qué necesita / de qué negocio es.
+2. Contás brevemente qué hace Nucleo Digital y cómo podría aplicarse a su caso.
+3. Si muestra interés real, ofrecés agendar una llamada de descubrimiento gratuita de 30 minutos con Braian.
+4. Cuando el cliente acepta: preguntás su nombre (si no lo diste ya) y pedís que elija un horario de los disponibles.
+5. Una vez confirmado nombre + fecha + hora → usás el bloque de acción (ver abajo).
+
+---
+
+AGENDAR LLAMADAS:
+Cuando el cliente quiera agendar, mostrá los horarios disponibles de la sección DISPONIBILIDAD más abajo.
+Pedí solo: nombre completo (o como quiere que lo llames) y el horario que le queda mejor.
+No pidas email ni otros datos — con nombre y horario alcanza.
+
+Cuando tengas nombre + fecha + hora confirmados por el cliente, agregá al final de tu respuesta
+(después de tu mensaje normal, en líneas nuevas) este bloque EXACTO:
+
+[AGENDAR_LLAMADA]
+Nombre: <nombre del cliente>
+Fecha: <DD/MM/{datetime.now(pytz.timezone("America/Montevideo")).year}>
+Hora: <HH:MM>
+Tema: <una línea con lo que quiere tratar, según la conversación>
+[/AGENDAR_LLAMADA]
+
+Ese bloque lo procesa el sistema — el cliente no lo ve. No lo menciones.
+Usalo UNA SOLA VEZ, cuando fecha y hora estén confirmadas por el cliente.
+Después del bloque, confirmale al cliente que quedó agendado y que Braian lo va a llamar a esa hora.
+
+---
+
+INFORMACIÓN DE NUCLEO DIGITAL:
+{servicios}
+
+---
+
+DISPONIBILIDAD PARA LLAMADAS:
+{slots_disponibles if slots_disponibles else "Cargando disponibilidad..."}
+
+"""
+    return prompt
 
 
-def _periodos_ocupados(service, calendar_id: str, dias: list[datetime]) -> list[tuple]:
-    if not dias:
-        return []
-
-    time_min = TIMEZONE.localize(datetime.combine(dias[0].date(), time(0, 0))).isoformat()
-    time_max = TIMEZONE.localize(datetime.combine(dias[-1].date(), time(23, 59))).isoformat()
-
-    body = {"timeMin": time_min, "timeMax": time_max, "items": [{"id": calendar_id}]}
-    result = service.freebusy().query(body=body).execute()
-    busy_raw = result.get("calendars", {}).get(calendar_id, {}).get("busy", [])
-
-    ocupados = []
-    for bloque in busy_raw:
-        inicio = datetime.fromisoformat(bloque["start"].replace("Z", "+00:00"))
-        fin = datetime.fromisoformat(bloque["end"].replace("Z", "+00:00"))
-        ocupados.append((inicio, fin))
-    return ocupados
-
-
-def _slot_libre(slot: datetime, ocupados: list[tuple]) -> bool:
-    slot_utc = slot.astimezone(pytz.utc)
-    fin_slot = slot_utc + timedelta(minutes=DURACION_SLOT_MIN)
-    for inicio, fin in ocupados:
-        if slot_utc < fin and fin_slot > inicio:
-            return False
-    return True
-
-
-def obtener_slots_disponibles(dias: int = 5) -> str:
-    calendar_id = os.environ.get("GOOGLE_CALENDAR_ID", "")
-    if not calendar_id or not os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", ""):
-        return (
-            "⚠️ El sistema de calendario no está configurado todavía. "
-            "Cuando el cliente quiera agendar, decile que Braian lo va a contactar "
-            "directamente para coordinar el horario."
-        )
-
-    try:
-        service = _get_service()
-        ahora = datetime.now(TIMEZONE)
-        margen = ahora + timedelta(minutes=MARGEN_MIN)
-        proximos_dias = _dias_habiles(ahora, dias)
-        ocupados = _periodos_ocupados(service, calendar_id, proximos_dias)
-
-        slots_por_dia: dict[str, list[str]] = {}
-        for dia in proximos_dias:
-            nombre_dia = dia.strftime("%A %d/%m").capitalize()
-            traducciones = {
-                "Monday": "Lunes", "Tuesday": "Martes", "Wednesday": "Miércoles",
-                "Thursday": "Jueves", "Friday": "Viernes",
-            }
-            for en, es in traducciones.items():
-                nombre_dia = nombre_dia.replace(en, es)
-
-            for slot in _slots_del_dia(dia):
-                if slot <= margen:
-                    continue
-                if _slot_libre(slot, ocupados):
-                    hora = slot.strftime("%H:%M")
-                    slots_por_dia.setdefault(nombre_dia, []).append(hora)
-
-        if not any(slots_por_dia.values()):
-            return (
-                "No hay slots disponibles en los próximos días hábiles. "
-                "Decile al cliente que Braian se va a poner en contacto para "
-                "coordinar un horario alternativo."
-            )
-
-        lineas = ["Horarios disponibles para agendar una llamada (Uruguay, GMT-3):"]
-        for dia, horas in slots_por_dia.items():
-            if horas:
-                lineas.append(f"• {dia}: {', '.join(horas)}")
-        return "\n".join(lineas)
-
-    except Exception as e:
-        print(f"[calendar] Error obteniendo disponibilidad: {e}")
-        return (
-            "No pude verificar la disponibilidad en este momento. "
-            "Cuando el cliente quiera agendar, decile que Braian lo va a contactar "
-            "directamente para coordinar."
-        )
-
-
-def crear_evento(
-    fecha_str: str,
-    hora_str: str,
-    nombre_cliente: str,
-    numero_cliente: str,
-    tema: str = "",
-) -> bool:
-    calendar_id = os.environ.get("GOOGLE_CALENDAR_ID", "")
-    if not calendar_id or not os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", ""):
-        print("[calendar] No configurado — no se creó el evento.")
-        return False
-
-    try:
-        service = _get_service()
-
-        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
-            try:
-                fecha = datetime.strptime(fecha_str, fmt).date()
-                break
-            except ValueError:
-                continue
-        else:
-            raise ValueError(f"Formato de fecha no reconocido: {fecha_str}")
-
-        # Si la fecha ya pasó, corregir al año actual o siguiente
-        hoy = datetime.now(TIMEZONE).date()
-        if fecha < hoy:
-            fecha = fecha.replace(year=hoy.year)
-        if fecha < hoy:
-            fecha = fecha.replace(year=hoy.year + 1)
-
-        hora = datetime.strptime(hora_str, "%H:%M").time()
-        inicio = TIMEZONE.localize(datetime.combine(fecha, hora))
-        fin = inicio + timedelta(minutes=DURACION_SLOT_MIN)
-
-        descripcion = f"Cliente WhatsApp: {numero_cliente}"
-        if tema:
-            descripcion += f"\nTema: {tema}"
-        descripcion += "\n\nAgendado automáticamente por el bot de Nucleo Digital."
-
-        evento = {
-            "summary": f"📞 Llamada Nucleo — {nombre_cliente}",
-            "description": descripcion,
-            "start": {"dateTime": inicio.isoformat(), "timeZone": "America/Montevideo"},
-            "end": {"dateTime": fin.isoformat(), "timeZone": "America/Montevideo"},
-            "reminders": {
-                "useDefault": False,
-                "overrides": [
-                    {"method": "popup", "minutes": 30},
-                    {"method": "email", "minutes": 60},
-                ],
-            },
-        }
-
-        service.events().insert(calendarId=calendar_id, body=evento).execute()
-        print(f"[calendar] Evento creado: {inicio.strftime('%d/%m/%Y %H:%M')} — {nombre_cliente}")
-        return True
-
-    except Exception as e:
-        print(f"[calendar] Error creando evento: {e}")
-        return False
+# Variables de entorno
+ANTHROPIC_API_KEY     = os.environ.get("ANTHROPIC_API_KEY")
+YCLOUD_API_KEY        = os.environ.get("YCLOUD_API_KEY")
+YCLOUD_PHONE_NUMBER   = os.environ.get("YCLOUD_PHONE_NUMBER")
+OWNER_WHATSAPP_NUMBER = os.environ.get("OWNER_WHATSAPP_NUMBER")
+GOOGLE_CALENDAR_ID    = os.environ.get("GOOGLE_CALENDAR_ID")
