@@ -102,7 +102,7 @@ class YCloudProvider(ProveedorWhatsApp):
         """
         if payload.get("type") != "whatsapp.smb.message.echoes":
             return None
-        msg = payload.get("whatsappInboundMessage", {}) or payload.get("message", {})
+        msg = payload.get("whatsappMessage", {})
         numero_cliente = msg.get("to", "")
         return numero_cliente or None
 
