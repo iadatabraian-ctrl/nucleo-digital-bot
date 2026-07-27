@@ -74,13 +74,20 @@ def esta_pausada(numero: str) -> bool:
 # ── Notas de administrador ──────────────────────────────────────────────────
 # El dueño le escribe directo al número del bot (se detecta porque el remitente
 # es OWNER_WHATSAPP_NUMBER) y ese mensaje queda como una instrucción para el
-# bot. Si el texto menciona un día ("mañana", "hoy", "el jueves", "28/07"),
-# la nota se aplica SOLO ese día y se borra sola al pasar — no hace falta que
-# el dueño se acuerde de limpiarla. Si no menciona ningún día (ej: "no
-# vendemos más el modelo X"), queda indefinida hasta /limpiar.
+# bot. Si el texto menciona un día ("mañana", "hoy", "el jueves", "28/07",
+# "29 del 7", "29 de julio"), la nota se aplica SOLO ese día y se borra sola
+# al pasar — no hace falta que el dueño se acuerde de limpiarla. Si no
+# menciona ningún día (ej: "no vendemos más el modelo X"), queda indefinida
+# hasta /limpiar.
 _DIAS_SEMANA = {
     "lunes": 0, "martes": 1, "miercoles": 2, "miércoles": 2,
     "jueves": 3, "viernes": 4, "sabado": 5, "sábado": 5, "domingo": 6,
+}
+
+_MESES = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+    "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9,
+    "octubre": 10, "noviembre": 11, "diciembre": 12,
 }
 
 _notas_admin: list[dict] = []  # [{"texto": str, "fecha": date | None}, ...]
@@ -100,16 +107,28 @@ def _resolver_fecha_mencionada(texto: str) -> date | None:
     if re.search(r"\bma(ñ|n)ana\b", t):
         return hoy + timedelta(days=1)
 
-    m = re.search(r"\b(\d{1,2})[/-](\d{1,2})\b", t)
-    if m:
-        dia, mes = int(m.group(1)), int(m.group(2))
+    def _fecha_valida(dia: int, mes: int) -> date | None:
         try:
             fecha = date(hoy.year, mes, dia)
             if fecha < hoy:
                 fecha = date(hoy.year + 1, mes, dia)
             return fecha
         except ValueError:
-            pass
+            return None
+
+    # Formatos numéricos: "29/7", "29-7", "29 del 7", "29 de 7"
+    m = re.search(r"\b(\d{1,2})\s*(?:[/-]|del?\b|de\b)\s*(\d{1,2})\b", t)
+    if m:
+        fecha = _fecha_valida(int(m.group(1)), int(m.group(2)))
+        if fecha:
+            return fecha
+
+    # Formato con nombre de mes: "29 de julio"
+    m = re.search(r"\b(\d{1,2})\s+de\s+(" + "|".join(_MESES) + r")\b", t)
+    if m:
+        fecha = _fecha_valida(int(m.group(1)), _MESES[m.group(2)])
+        if fecha:
+            return fecha
 
     for nombre, idx in _DIAS_SEMANA.items():
         if re.search(rf"\b{nombre}\b", t):
