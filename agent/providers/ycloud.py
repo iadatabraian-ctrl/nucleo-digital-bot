@@ -2,7 +2,7 @@
 agent/providers/ycloud.py
 --------------------------
 Implementación contra YCloud API (WhatsApp Coexistence).
-Incluye transcripción de audios via Groq Whisper.
+Incluye transcripción de audios via Groq Whisper y deduplicación de mensajes.
 """
 import os
 import io
@@ -10,6 +10,9 @@ import requests
 from .base import ProveedorWhatsApp
 
 YCLOUD_API_BASE = "https://api.ycloud.com/v2"
+
+# Deduplicación: wamids ya procesados (se limpia al reiniciar)
+_wamids_procesados: set[str] = set()
 
 
 def _transcribir_audio(url: str, mime_type: str = "audio/ogg") -> str:
@@ -70,6 +73,18 @@ class YCloudProvider(ProveedorWhatsApp):
                 return None
 
             msg = payload.get("whatsappInboundMessage", {})
+            wamid = msg.get("wamid", "")
+
+            # Deduplicación: ignorar mensajes ya procesados
+            if wamid and wamid in _wamids_procesados:
+                print(f"[dedup] Mensaje duplicado ignorado: {wamid[:30]}")
+                return None
+            if wamid:
+                _wamids_procesados.add(wamid)
+                # Evitar que el set crezca infinito
+                if len(_wamids_procesados) > 1000:
+                    _wamids_procesados.clear()
+
             tipo = msg.get("type", "")
             numero = msg.get("from", "")
             nombre = msg.get("customerProfile", {}).get("name", "")
@@ -116,3 +131,4 @@ class YCloudProvider(ProveedorWhatsApp):
         resp = requests.post(url, headers=headers, json=data, timeout=15)
         if resp.status_code >= 300:
             print(f"[ERROR enviando] {resp.status_code}: {resp.text}")
+            
