@@ -15,11 +15,9 @@ _AGENDAR_RE = re.compile(
     r"\[AGENDAR_LLAMADA\](.*?)\[/AGENDAR_LLAMADA\]", re.DOTALL
 )
 
-
 def _parsear_campo(bloque: str, campo: str) -> str:
     match = re.search(rf"^{campo}:\s*(.+)$", bloque, re.MULTILINE | re.IGNORECASE)
     return match.group(1).strip() if match else ""
-
 
 def responder(numero: str, mensaje_usuario: str):
     """Devuelve (texto_para_cliente, resumen_notif_o_None)."""
@@ -38,6 +36,11 @@ def responder(numero: str, mensaje_usuario: str):
 
     texto_completo = respuesta.content[0].text
     memory.agregar_mensaje(numero, "assistant", texto_completo)
+
+    # DEBUG: ver respuesta completa de Claude
+    print(f"[brain] Respuesta Claude: {texto_completo[:500]}")
+    match_debug = _AGENDAR_RE.search(texto_completo)
+    print(f"[brain] Bloque AGENDAR encontrado: {bool(match_debug)}")
 
     match = _AGENDAR_RE.search(texto_completo)
     resumen_notif = None
