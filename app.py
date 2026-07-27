@@ -150,6 +150,20 @@ def recibir_mensaje():
         if texto_limpio.lower() in ("/limpiar", "/limpiar avisos", "borrar avisos"):
             memory.limpiar_notas_admin()
             proveedor_activo.enviar_mensaje(numero, "Listo, borré todos los avisos del día 👍")
+        elif texto_limpio.lower() in ("/avisos", "/ver avisos", "/estado", "avisos activos", "que avisos tengo", "qué avisos tengo"):
+            notas = memory.listar_notas_admin()
+            if not notas:
+                proveedor_activo.enviar_mensaje(numero, "No tenés ningún aviso activo ahora mismo. 👍")
+            else:
+                lineas = []
+                for n in notas:
+                    if n["fecha"] is None:
+                        lineas.append(f"• (sin fecha, indefinido) {n['texto']}")
+                    else:
+                        lineas.append(f"• {n['fecha'].strftime('%d/%m')} — {n['texto']}")
+                proveedor_activo.enviar_mensaje(
+                    numero, "Avisos activos:\n" + "\n".join(lineas)
+                )
         else:
             fecha_resuelta = memory.agregar_nota_admin(texto_limpio)
             if fecha_resuelta:
