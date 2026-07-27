@@ -55,10 +55,7 @@ def recibir_mensaje():
     # ── Coexistence: el dueño respondió a mano desde la app ──────────────────
     numero_pausado = proveedor_activo.parsear_eco_manual(payload)
     if numero_pausado:
-        texto_eco = (
-            payload.get("whatsappInboundMessage", {}).get("text", {}).get("body", "")
-            or payload.get("message", {}).get("text", {}).get("body", "")
-        )
+        texto_eco = payload.get("whatsappMessage", {}).get("text", {}).get("body", "")
         if texto_eco.strip().lower() in ("/bot", "/bot on", "segui vos", "seguí vos"):
             memory.reanudar_conversacion(numero_pausado)
             print(f"[coexistence] Bot reactivado manualmente para {numero_pausado}")
