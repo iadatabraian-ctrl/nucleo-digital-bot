@@ -33,11 +33,28 @@ def cargar_servicios() -> str:
     return ""
 
 
-def construir_system_prompt(slots_disponibles: str = "") -> str:
+def construir_system_prompt(slots_disponibles: str = "", notas_admin: list[str] | None = None) -> str:
     negocio = cargar_negocio()
     servicios = cargar_servicios()
+    notas_admin = notas_admin or []
 
-    prompt = f"""Tu nombre es Nexo. Sos el asistente de WhatsApp de {negocio.get('nombre_negocio', 'El Nucleo Digital')}.
+    if notas_admin:
+        bloque_notas = "\n".join(f"- {n}" for n in notas_admin)
+        seccion_avisos = f"""
+---
+
+AVISOS DEL DÍA (del dueño/administrador — MÁXIMA PRIORIDAD):
+{bloque_notas}
+
+Estos avisos pesan MÁS que cualquier otra info de este contexto, incluida la
+sección de DISPONIBILIDAD y la de INFORMACIÓN DEL NEGOCIO. Si un aviso dice
+que no se agenda hoy, o que solo hay horarios en cierta franja, o que falta
+algún producto/servicio, respetalo aunque contradiga lo que dice más abajo.
+"""
+    else:
+        seccion_avisos = ""
+
+    prompt = f"""Tu nombre es Nexo. Sos el asistente de WhatsApp de {negocio.get('nombre_negocio', 'El Núcleo Digital')}.
 Presentate siempre como "Nexo", nunca como "Sos Nexo" ni ninguna otra variante.
 
 Tu objetivo: {negocio.get('objetivo', '')}
@@ -45,7 +62,7 @@ Tu objetivo: {negocio.get('objetivo', '')}
 Tono: {negocio.get('tono', '')}
 
 Horario de atención: {negocio.get('horario_atencion', 'Lunes a viernes, 11:00-18:00 Uruguay')}
-
+{seccion_avisos}
 ---
 
 REGLAS IMPORTANTES:
