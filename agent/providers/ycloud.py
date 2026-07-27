@@ -94,6 +94,18 @@ class YCloudProvider(ProveedorWhatsApp):
         self.api_key = os.environ.get("YCLOUD_API_KEY", "")
         self.from_number = os.environ.get("YCLOUD_PHONE_NUMBER", "")
 
+    def parsear_eco_manual(self, payload: dict) -> str | None:
+        """
+        Si el dueño le contestó a un cliente a mano desde la app de WhatsApp
+        Business (Coexistence), YCloud manda un evento 'echo'. Devuelve el
+        número del CLIENTE al que le escribió el dueño, o None si no aplica.
+        """
+        if payload.get("type") != "whatsapp.smb.message.echoes":
+            return None
+        msg = payload.get("whatsappInboundMessage", {}) or payload.get("message", {})
+        numero_cliente = msg.get("to", "")
+        return numero_cliente or None
+
     def parsear_mensaje_entrante(self, payload: dict) -> dict | None:
         try:
             if payload.get("type") != "whatsapp.inbound_message.received":
