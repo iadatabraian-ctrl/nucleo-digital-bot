@@ -11,6 +11,8 @@ Para cambiar el comportamiento del bot sin tocar código:
 import os
 import yaml
 from pathlib import Path
+from datetime import datetime
+import pytz
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -33,23 +35,34 @@ def cargar_servicios() -> str:
     return ""
 
 
-def construir_system_prompt(slots_disponibles: str = "", notas_admin: list[str] | None = None) -> str:
+def construir_system_prompt(slots_disponibles: str = "", notas_admin: list[dict] | None = None) -> str:
     negocio = cargar_negocio()
     servicios = cargar_servicios()
     notas_admin = notas_admin or []
 
     if notas_admin:
-        bloque_notas = "\n".join(f"- {n}" for n in notas_admin)
+        hoy_str = datetime.now(pytz.timezone("America/Montevideo")).strftime("%d/%m")
+        lineas = []
+        for n in notas_admin:
+            fecha = n.get("fecha")
+            if fecha is None:
+                lineas.append(f"- (sin fecha, aplica siempre): {n['texto']}")
+            else:
+                lineas.append(f"- Para el {fecha.strftime('%d/%m')}: {n['texto']}")
+        bloque_notas = "\n".join(lineas)
         seccion_avisos = f"""
 ---
 
-AVISOS DEL DÍA (del dueño/administrador — MÁXIMA PRIORIDAD):
+AVISOS DEL DUEÑO/ADMINISTRADOR (MÁXIMA PRIORIDAD — hoy es {hoy_str}):
 {bloque_notas}
 
-Estos avisos pesan MÁS que cualquier otra info de este contexto, incluida la
-sección de DISPONIBILIDAD y la de INFORMACIÓN DEL NEGOCIO. Si un aviso dice
-que no se agenda hoy, o que solo hay horarios en cierta franja, o que falta
-algún producto/servicio, respetalo aunque contradiga lo que dice más abajo.
+Cada aviso aplica SOLO a la fecha que indica (o siempre, si dice "sin fecha").
+Cuando el cliente pregunte por disponibilidad de un día en particular (hoy,
+mañana, o cualquier fecha futura), fijate si hay un aviso para ESA fecha
+puntual y aplicalo — aunque el cliente pregunte con anticipación por un día
+que todavía no llegó. Estos avisos pesan MÁS que la sección DISPONIBILIDAD
+y que INFORMACIÓN DEL NEGOCIO: si contradicen lo que dicen esas secciones
+para esa fecha, gana el aviso.
 """
     else:
         seccion_avisos = ""
