@@ -37,7 +37,7 @@ def construir_system_prompt(slots_disponibles: str = "") -> str:
     negocio = cargar_negocio()
     servicios = cargar_servicios()
 
-    prompt = f"""Tu nombre es Nexo. Sos el asistente de WhatsApp de {negocio.get('nombre_negocio', 'Nucleo Digital')}.
+    prompt = f"""Tu nombre es Nexo. Sos el asistente de WhatsApp de {negocio.get('nombre_negocio', 'El Nucleo Digital')}.
 Presentate siempre como "Nexo", nunca como "Sos Nexo" ni ninguna otra variante.
 
 Tu objetivo: {negocio.get('objetivo', '')}
