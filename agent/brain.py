@@ -25,7 +25,7 @@ def responder(numero: str, mensaje_usuario: str):
     historial = memory.obtener_historial(numero)
 
     slots = gcal.obtener_slots_disponibles(dias=5)
-    notas_admin = memory.obtener_notas_admin()
+    notas_admin = memory.listar_notas_admin()
     system_prompt = config.construir_system_prompt(
         slots_disponibles=slots, notas_admin=notas_admin
     )
