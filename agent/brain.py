@@ -28,7 +28,7 @@ def responder(numero: str, mensaje_usuario: str):
     system_prompt = config.construir_system_prompt(slots_disponibles=slots)
 
     respuesta = _client.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-haiku-4-5",
         max_tokens=600,
         system=system_prompt,
         messages=historial,
