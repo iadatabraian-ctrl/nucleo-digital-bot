@@ -21,3 +21,12 @@ class ProveedorWhatsApp(ABC):
     def enviar_mensaje(self, numero: str, texto: str) -> None:
         """Envía un mensaje de texto al número indicado."""
         raise NotImplementedError
+
+    def parsear_eco_manual(self, payload: dict) -> str | None:
+        """
+        Si el proveedor soporta Coexistence, devuelve el número del cliente
+        cuando el dueño le respondió a mano desde la app de WhatsApp Business.
+        Devuelve None si el payload no es un eco o el proveedor no lo soporta.
+        Implementación default: no soportado.
+        """
+        return None
