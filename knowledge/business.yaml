@@ -1,7 +1,7 @@
 # knowledge/business.yaml — Nucleo Digital
 # Editá este archivo para cambiar el comportamiento del bot sin tocar código.
 
-nombre_negocio: "Nucleo Digital"
+nombre_negocio: "El Nucleo Digital"
 nombre_agente: "Nexo"
 
 rubro: "Agencia de IA, automatizaciones y marketing digital"
