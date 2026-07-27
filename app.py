@@ -85,6 +85,11 @@ def _agregar_a_buffer(numero: str, texto: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _normalizar_numero(numero: str) -> str:
+    """Deja solo dígitos, para comparar números aunque vengan con +/espacios distinto."""
+    return "".join(c for c in (numero or "") if c.isdigit())
+
+
 @app.route("/webhook", methods=["GET"])
 def verificar_webhook():
     modo      = request.args.get("hub.mode")
@@ -116,13 +121,16 @@ def recibir_mensaje():
     # ── Coexistence: el dueño respondió a mano desde la app ──────────────────
     numero_pausado = proveedor_activo.parsear_eco_manual(payload)
     if numero_pausado:
-        texto_eco = payload.get("whatsappMessage", {}).get("text", {}).get("body", "")
-        if texto_eco.strip().lower() in ("/bot", "/bot on", "segui vos", "seguí vos"):
+        texto_eco = payload.get("whatsappMessage", {}).get("text", {}).get("body", "").strip().lower()
+        if texto_eco in ("/bot", "/bot on", "segui vos", "seguí vos"):
             memory.reanudar_conversacion(numero_pausado)
             print(f"[coexistence] Bot reactivado manualmente para {numero_pausado}")
+        elif texto_eco in ("/pausa", "/pausa on", "pausa"):
+            memory.pausar_conversacion_indefinida(numero_pausado)
+            print(f"[coexistence] Pausa INDEFINIDA activada para {numero_pausado} — 100% manual")
         else:
             memory.pausar_conversacion(numero_pausado)
-            print(f"[coexistence] Dueño tomó la conversación con {numero_pausado} — bot pausado")
+            print(f"[coexistence] Dueño tomó la conversación con {numero_pausado} — bot pausado 3hs")
         return "ok", 200
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -133,6 +141,22 @@ def recibir_mensaje():
 
     numero        = mensaje["numero"]
     texto_usuario = mensaje["texto"]
+
+    # ── Modo admin: mensaje del dueño directo al número del bot ──────────────
+    # Se trata como comando/aviso del día, NO como consulta de un cliente.
+    admin_num = _normalizar_numero(config.OWNER_WHATSAPP_NUMBER)
+    if admin_num and _normalizar_numero(numero) == admin_num:
+        texto_limpio = texto_usuario.strip()
+        if texto_limpio.lower() in ("/limpiar", "/limpiar avisos", "borrar avisos"):
+            memory.limpiar_notas_admin()
+            proveedor_activo.enviar_mensaje(numero, "Listo, borré todos los avisos del día 👍")
+        else:
+            memory.agregar_nota_admin(texto_limpio)
+            proveedor_activo.enviar_mensaje(
+                numero, f"Anotado ✅: \"{texto_limpio}\"\nLo tengo en cuenta para las consultas de hoy."
+            )
+        return "ok", 200
+    # ──────────────────────────────────────────────────────────────────────────
 
     if memory.esta_pausada(numero):
         print(f"[coexistence] Conversación pausada, el bot no responde a {numero}")
