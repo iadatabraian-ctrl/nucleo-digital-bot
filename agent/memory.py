@@ -15,7 +15,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta
 
 VENTANA = 20  # mensajes a recordar por cliente
-PAUSA_HORAS_DEFAULT = 3  # horas que el bot se queda callado tras una respuesta manual
+PAUSA_HORAS_DEFAULT = 2  # horas que el bot se queda callado tras una respuesta manual
 
 _historial = defaultdict(lambda: deque(maxlen=VENTANA))
 # numero -> datetime (vence en ese momento) o None (pausa indefinida/permanente)
