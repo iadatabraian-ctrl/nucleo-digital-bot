@@ -157,5 +157,11 @@ def obtener_notas_admin() -> list[str]:
     return [n["texto"] for n in _notas_admin if n["fecha"] is None or n["fecha"] == hoy]
 
 
+def listar_notas_admin() -> list[dict]:
+    """Todas las notas vigentes (hoy, futuras o indefinidas), con su fecha — para consulta del admin."""
+    _limpiar_notas_vencidas()
+    return [dict(n) for n in sorted(_notas_admin, key=lambda n: (n["fecha"] is None, n["fecha"]))]
+
+
 def limpiar_notas_admin():
     _notas_admin.clear()
