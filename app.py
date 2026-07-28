@@ -46,6 +46,11 @@ def _procesar_buffer(numero: str):
 
     texto_combinado = "\n".join(buffer["mensajes"])
 
+    print(f"[DEBUG texto_a_claude] {texto_combinado!r}")
+
+    try:
+        respuesta, resumen_notif = responder(numero, texto_combinado)
+
     try:
         respuesta, resumen_notif = responder(numero, texto_combinado)
     except Exception as e:
