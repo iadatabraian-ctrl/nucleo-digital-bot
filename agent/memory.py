@@ -192,3 +192,33 @@ def listar_notas_admin() -> list[dict]:
 
 def limpiar_notas_admin():
     _redis.delete(_NOTAS_KEY)
+
+
+# ── Catálogo de productos (mapeo product_retailer_id -> nombre) ────────────
+# Se guarda en Redis para que sobreviva reinicios. Se administra desde
+# WhatsApp con /producto, /productos y /borrar_producto (ver app.py) —
+# así no hace falta tocar código cada vez que cambia el catálogo.
+_CATALOGO_KEY = "catalogo_productos"
+
+
+def obtener_catalogo() -> dict[str, str]:
+    crudo = _redis.get(_CATALOGO_KEY)
+    if not crudo:
+        return {}
+    return json.loads(crudo)
+
+
+def guardar_producto(product_id: str, nombre: str):
+    catalogo = obtener_catalogo()
+    catalogo[product_id] = nombre
+    _redis.set(_CATALOGO_KEY, json.dumps(catalogo))
+
+
+def borrar_producto(product_id: str) -> bool:
+    """Devuelve True si existía y se borró, False si no estaba."""
+    catalogo = obtener_catalogo()
+    if product_id not in catalogo:
+        return False
+    del catalogo[product_id]
+    _redis.set(_CATALOGO_KEY, json.dumps(catalogo))
+    return True
