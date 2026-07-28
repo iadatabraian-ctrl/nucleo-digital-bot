@@ -11,46 +11,64 @@ import hmac
 import hashlib
 import requests
 from .base import ProveedorWhatsApp
+from .. import memory
 
 YCLOUD_API_BASE = "https://api.ycloud.com/v2"
 
 # Deduplicación: wamids ya procesados (se limpia al reiniciar)
 _wamids_procesados: set[str] = set()
 
-# ── Mapeo de catálogo de WhatsApp Business ──────────────────────────────────
-# product_retailer_id (viene en el payload de "order") -> nombre real del
-# producto/servicio. Actualizar acá si se agregan/renombran productos en el
-# catálogo de WhatsApp Business.
-CATALOGO_PRODUCTOS: dict[str, str] = {
+# ── Catálogo de productos: semilla inicial ──────────────────────────────────
+# Solo se usa si Redis todavía no tiene nada guardado para ese ID. Una vez
+# que el mapeo real vive en Redis (vía /producto desde WhatsApp), esta
+# semilla deja de importar — el catálogo se administra 100% por WhatsApp.
+_CATALOGO_SEMILLA: dict[str, str] = {
     "an7zf2hqy6": "Automatizaciones de procesos",
     "tmtbpywd8b": "Agentes de IA personalizados",
     "5oj1894qyt": "Bots de WhatsApp con IA",
 }
 
 
-def _texto_desde_order(order: dict) -> str:
+def _resolver_nombre_producto(pid: str) -> str | None:
+    catalogo_dinamico = memory.obtener_catalogo()
+    if pid in catalogo_dinamico:
+        return catalogo_dinamico[pid]
+    return _CATALOGO_SEMILLA.get(pid)
+
+
+def _texto_desde_order(order: dict) -> tuple[str, list[str]]:
     """
     Convierte el bloque 'order' del webhook (carrito del catálogo) en un
     texto natural, para que entre al mismo flujo que un mensaje de texto
     normal y Claude lo conteste con el system prompt de siempre.
+    Devuelve (texto_para_claude, ids_sin_identificar).
     """
     items = order.get("product_items", [])
     nombres = []
+    ids_desconocidos: list[str] = []
+
     for item in items:
         pid = item.get("product_retailer_id", "")
-        nombre = CATALOGO_PRODUCTOS.get(pid, f"producto no identificado ({pid})")
+        nombre = _resolver_nombre_producto(pid)
         cantidad = item.get("quantity", 1)
+
+        if nombre is None:
+            ids_desconocidos.append(pid)
+            nombre = f"producto no identificado ({pid})"
+
         if cantidad and cantidad > 1:
             nombres.append(f"{nombre} (x{cantidad})")
         else:
             nombres.append(nombre)
 
     if not nombres:
-        return "El cliente envió un pedido del catálogo, pero no se pudo leer el contenido."
+        texto = "El cliente envió un pedido del catálogo, pero no se pudo leer el contenido."
+    elif len(nombres) == 1:
+        texto = f"[PEDIDO DEL CATÁLOGO] El cliente agregó al carrito: {nombres[0]}."
+    else:
+        texto = "[PEDIDO DEL CATÁLOGO] El cliente agregó al carrito: " + ", ".join(nombres) + "."
 
-    if len(nombres) == 1:
-        return f"[PEDIDO DEL CATÁLOGO] El cliente agregó al carrito: {nombres[0]}."
-    return "[PEDIDO DEL CATÁLOGO] El cliente agregó al carrito: " + ", ".join(nombres) + "."
+    return texto, ids_desconocidos
 
 
 def verificar_firma(payload_bytes: bytes, firma_header: str, secret: str) -> bool:
@@ -180,7 +198,27 @@ class YCloudProvider(ProveedorWhatsApp):
 
             elif tipo == "order":
                 order = msg.get("order", {})
-                texto = _texto_desde_order(order)
+                texto, ids_desconocidos = _texto_desde_order(order)
+
+                if ids_desconocidos:
+                    lineas_comando = "\n".join(
+                        f"/producto {pid} <nombre del producto>" for pid in ids_desconocidos
+                    )
+                    aviso_admin = (
+                        "⚠️ Nexo recibió un pedido con producto(s) del catálogo "
+                        "que todavía no tienen nombre asignado:\n\n"
+                        + lineas_comando
+                        + "\n\nCopiá el comando, reemplazá <nombre del producto> y mandámelo "
+                        "para que lo reconozca la próxima vez."
+                    )
+                    if not texto or not numero:
+                        return None
+                    return {
+                        "numero": numero,
+                        "texto": texto,
+                        "nombre": nombre,
+                        "aviso_admin": aviso_admin,
+                    }
 
             else:
                 return None
