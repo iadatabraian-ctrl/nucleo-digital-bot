@@ -117,7 +117,9 @@ def recibir_mensaje():
         payload = json.loads(payload_bytes) if payload_bytes else {}
     except Exception:
         payload = {}
-
+# ── DEBUG TEMPORAL: ver el payload crudo para mapear catálogo ────────────
+    print(f"[DEBUG payload] {json.dumps(payload, ensure_ascii=False)}")
+    # ─────────────────────────────────────────────────────────────────────────
     # ── Coexistence: el dueño respondió a mano desde la app ──────────────────
     numero_pausado = proveedor_activo.parsear_eco_manual(payload)
     if numero_pausado:
