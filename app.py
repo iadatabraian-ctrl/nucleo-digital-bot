@@ -50,9 +50,6 @@ def _procesar_buffer(numero: str):
 
     try:
         respuesta, resumen_notif = responder(numero, texto_combinado)
-
-    try:
-        respuesta, resumen_notif = responder(numero, texto_combinado)
     except Exception as e:
         print(f"[ERROR en brain.responder] {e}")
         respuesta     = "Disculpá, tuve un problema procesando tu mensaje. Ya te contactamos."
@@ -122,9 +119,11 @@ def recibir_mensaje():
         payload = json.loads(payload_bytes) if payload_bytes else {}
     except Exception:
         payload = {}
-# ── DEBUG TEMPORAL: ver el payload crudo para mapear catálogo ────────────
+
+    # ── DEBUG TEMPORAL: ver el payload crudo para mapear catálogo ────────────
     print(f"[DEBUG payload] {json.dumps(payload, ensure_ascii=False)}")
     # ─────────────────────────────────────────────────────────────────────────
+
     # ── Coexistence: el dueño respondió a mano desde la app ──────────────────
     numero_pausado = proveedor_activo.parsear_eco_manual(payload)
     if numero_pausado:
