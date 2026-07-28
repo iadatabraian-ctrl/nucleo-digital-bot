@@ -17,6 +17,41 @@ YCLOUD_API_BASE = "https://api.ycloud.com/v2"
 # Deduplicación: wamids ya procesados (se limpia al reiniciar)
 _wamids_procesados: set[str] = set()
 
+# ── Mapeo de catálogo de WhatsApp Business ──────────────────────────────────
+# product_retailer_id (viene en el payload de "order") -> nombre real del
+# producto/servicio. Actualizar acá si se agregan/renombran productos en el
+# catálogo de WhatsApp Business.
+CATALOGO_PRODUCTOS: dict[str, str] = {
+    "an7zf2hqy6": "Automatizaciones de procesos",
+    "tmtbpywd8b": "Agentes de IA personalizados",
+    "5oj1894qyt": "Bots de WhatsApp con IA",
+}
+
+
+def _texto_desde_order(order: dict) -> str:
+    """
+    Convierte el bloque 'order' del webhook (carrito del catálogo) en un
+    texto natural, para que entre al mismo flujo que un mensaje de texto
+    normal y Claude lo conteste con el system prompt de siempre.
+    """
+    items = order.get("product_items", [])
+    nombres = []
+    for item in items:
+        pid = item.get("product_retailer_id", "")
+        nombre = CATALOGO_PRODUCTOS.get(pid, f"producto no identificado ({pid})")
+        cantidad = item.get("quantity", 1)
+        if cantidad and cantidad > 1:
+            nombres.append(f"{nombre} (x{cantidad})")
+        else:
+            nombres.append(nombre)
+
+    if not nombres:
+        return "El cliente envió un pedido del catálogo, pero no se pudo leer el contenido."
+
+    if len(nombres) == 1:
+        return f"[PEDIDO DEL CATÁLOGO] El cliente agregó al carrito: {nombres[0]}."
+    return "[PEDIDO DEL CATÁLOGO] El cliente agregó al carrito: " + ", ".join(nombres) + "."
+
 
 def verificar_firma(payload_bytes: bytes, firma_header: str, secret: str) -> bool:
     """
@@ -142,6 +177,10 @@ class YCloudProvider(ProveedorWhatsApp):
                         texto = "__AUDIO_NO_TRANSCRIPTO__"
                 else:
                     texto = "__AUDIO_NO_TRANSCRIPTO__"
+
+            elif tipo == "order":
+                order = msg.get("order", {})
+                texto = _texto_desde_order(order)
 
             else:
                 return None
