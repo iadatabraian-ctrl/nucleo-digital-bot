@@ -1,74 +1,77 @@
 """
 agent/memory.py
 ----------------
-Historial de conversación por número de WhatsApp — ventana deslizante en RAM.
-Si un día se necesita persistencia entre reinicios de Render, se cambia esto
-por SQLite sin tocar el resto del código.
+Historial de conversación, pausas y avisos de admin — TODO guardado en
+Upstash Redis (no en RAM), para que sobreviva a los reinicios/"sueño" del
+servicio en Render (el plan gratis duerme el servicio tras ~15 min de
+inactividad y borra cualquier variable en memoria).
 
-También trackea pausas manuales: cuando el dueño responde por su cuenta desde
-la app de WhatsApp Business (Coexistence), el bot deja de contestar a ESE
-cliente puntual — por un tiempo (pausa corta) o indefinidamente (pausa
-permanente, para chats que se quieren mantener 100% manuales, como
-prospección en frío) hasta que el dueño lo reactive con un comando.
+Requiere las variables de entorno UPSTASH_REDIS_URL y UPSTASH_REDIS_TOKEN
+(las mismas que aparecen en el panel de Upstash, sección REST API).
 """
+import os
 import re
-from collections import defaultdict, deque
+import json
 from datetime import datetime, date, timedelta
 import pytz
+from upstash_redis import Redis
 
 TIMEZONE = pytz.timezone("America/Montevideo")
 
 VENTANA = 20  # mensajes a recordar por cliente
-PAUSA_HORAS_DEFAULT = 3  # horas que el bot se queda callado tras una respuesta manual
+PAUSA_HORAS_DEFAULT = 2  # horas que el bot se queda callado tras una respuesta manual
 
-_historial = defaultdict(lambda: deque(maxlen=VENTANA))
-# numero -> datetime (vence en ese momento) o None (pausa indefinida/permanente)
-_pausas: dict[str, datetime | None] = {}
+_redis = Redis(
+    url=os.environ.get("UPSTASH_REDIS_URL", ""),
+    token=os.environ.get("UPSTASH_REDIS_TOKEN", ""),
+)
 
+
+# ── Historial de conversación por número ────────────────────────────────────
 
 def agregar_mensaje(numero: str, rol: str, contenido: str):
     """rol: 'user' o 'assistant'"""
-    _historial[numero].append({"role": rol, "content": contenido})
+    key = f"hist:{numero}"
+    _redis.rpush(key, json.dumps({"role": rol, "content": contenido}))
+    _redis.ltrim(key, -VENTANA, -1)
 
 
 def obtener_historial(numero: str) -> list:
-    return list(_historial[numero])
+    crudos = _redis.lrange(f"hist:{numero}", 0, -1) or []
+    return [json.loads(m) for m in crudos]
 
 
 def limpiar_historial(numero: str):
-    _historial[numero].clear()
+    _redis.delete(f"hist:{numero}")
 
+
+# ── Pausas por conversación ──────────────────────────────────────────────────
+# Se usa el TTL nativo de Redis: una pausa "temporal" se guarda con expiración
+# automática (Redis la borra solo, no hace falta chequear fechas a mano).
+# Una pausa "indefinida" se guarda sin expiración.
 
 def pausar_conversacion(numero: str, horas: float = PAUSA_HORAS_DEFAULT):
     """El dueño tomó la conversación manualmente — el bot se calla por un tiempo."""
-    _pausas[numero] = datetime.utcnow() + timedelta(hours=horas)
+    _redis.set(f"pausa:{numero}", "temporal", ex=int(horas * 3600))
 
 
 def pausar_conversacion_indefinida(numero: str):
     """
     Pausa permanente — para chats que se quieren mantener 100% manuales
-    (ej: prospección en frío desde el número de la agencia). No vence solo;
+    (ej: prospección en frío desde el número de la agencia). No vence sola;
     hace falta reanudar_conversacion() para que el bot vuelva a responder ahí.
     """
-    _pausas[numero] = None
+    _redis.set(f"pausa:{numero}", "indefinida")
 
 
 def reanudar_conversacion(numero: str):
     """Reactiva el bot para este número de inmediato (comando manual del dueño)."""
-    _pausas.pop(numero, None)
+    _redis.delete(f"pausa:{numero}")
 
 
 def esta_pausada(numero: str) -> bool:
     """True si el bot debe quedarse callado para este número ahora mismo."""
-    if numero not in _pausas:
-        return False
-    vence = _pausas[numero]
-    if vence is None:
-        return True  # pausa indefinida
-    if datetime.utcnow() >= vence:
-        _pausas.pop(numero, None)  # ya venció, se limpia sola
-        return False
-    return True
+    return _redis.get(f"pausa:{numero}") is not None
 
 
 # ── Notas de administrador ──────────────────────────────────────────────────
@@ -79,6 +82,8 @@ def esta_pausada(numero: str) -> bool:
 # al pasar — no hace falta que el dueño se acuerde de limpiarla. Si no
 # menciona ningún día (ej: "no vendemos más el modelo X"), queda indefinida
 # hasta /limpiar.
+_NOTAS_KEY = "notas_admin"
+
 _DIAS_SEMANA = {
     "lunes": 0, "martes": 1, "miercoles": 2, "miércoles": 2,
     "jueves": 3, "viernes": 4, "sabado": 5, "sábado": 5, "domingo": 6,
@@ -89,8 +94,6 @@ _MESES = {
     "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9,
     "octubre": 10, "noviembre": 11, "diciembre": 12,
 }
-
-_notas_admin: list[dict] = []  # [{"texto": str, "fecha": date | None}, ...]
 
 
 def _hoy() -> date:
@@ -138,30 +141,54 @@ def _resolver_fecha_mencionada(texto: str) -> date | None:
     return None  # no se menciona ningún día -> indefinida
 
 
+def _leer_notas_crudas() -> list[dict]:
+    crudo = _redis.get(_NOTAS_KEY)
+    if not crudo:
+        return []
+    datos = json.loads(crudo)
+    # las fechas se guardan como string "YYYY-MM-DD" o null en JSON
+    for n in datos:
+        if n.get("fecha"):
+            n["fecha"] = date.fromisoformat(n["fecha"])
+    return datos
+
+
+def _guardar_notas_crudas(notas: list[dict]):
+    serializable = [
+        {"texto": n["texto"], "fecha": n["fecha"].isoformat() if n["fecha"] else None}
+        for n in notas
+    ]
+    _redis.set(_NOTAS_KEY, json.dumps(serializable))
+
+
+def _limpiar_notas_vencidas(notas: list[dict]) -> list[dict]:
+    hoy = _hoy()
+    return [n for n in notas if n["fecha"] is None or n["fecha"] >= hoy]
+
+
 def agregar_nota_admin(texto: str) -> date | None:
     """Guarda la nota y devuelve la fecha a la que quedó asociada (o None si es indefinida)."""
-    _limpiar_notas_vencidas()
+    notas = _limpiar_notas_vencidas(_leer_notas_crudas())
     fecha = _resolver_fecha_mencionada(texto)
-    _notas_admin.append({"texto": texto, "fecha": fecha})
+    notas.append({"texto": texto, "fecha": fecha})
+    _guardar_notas_crudas(notas)
     return fecha
 
 
-def _limpiar_notas_vencidas():
-    hoy = _hoy()
-    _notas_admin[:] = [n for n in _notas_admin if n["fecha"] is None or n["fecha"] >= hoy]
-
-
 def obtener_notas_admin() -> list[str]:
-    _limpiar_notas_vencidas()
+    """Solo las notas vigentes HOY (para compatibilidad; preferir listar_notas_admin)."""
     hoy = _hoy()
-    return [n["texto"] for n in _notas_admin if n["fecha"] is None or n["fecha"] == hoy]
+    notas = _limpiar_notas_vencidas(_leer_notas_crudas())
+    _guardar_notas_crudas(notas)
+    return [n["texto"] for n in notas if n["fecha"] is None or n["fecha"] == hoy]
 
 
 def listar_notas_admin() -> list[dict]:
     """Todas las notas vigentes (hoy, futuras o indefinidas), con su fecha — para consulta del admin."""
-    _limpiar_notas_vencidas()
-    return [dict(n) for n in sorted(_notas_admin, key=lambda n: (n["fecha"] is None, n["fecha"]))]
+    notas = _limpiar_notas_vencidas(_leer_notas_crudas())
+    _guardar_notas_crudas(notas)
+    return sorted(notas, key=lambda n: (n["fecha"] is None, n["fecha"]))
 
 
 def limpiar_notas_admin():
-    _notas_admin.clear()
+    _redis.delete(_NOTAS_KEY)
