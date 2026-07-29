@@ -5,8 +5,8 @@ Carga knowledge/business.yaml + knowledge/servicios.md y construye el
 system prompt para Claude. También expone las variables de entorno.
 
 Para cambiar el comportamiento del bot sin tocar código:
-  → Editá knowledge/business.yaml (tono, objetivo, etc.)
-  → Editá knowledge/servicios.md  (servicios, precios, casos de uso)
+→ Editá knowledge/business.yaml (tono, objetivo, etc.)
+→ Editá knowledge/servicios.md (servicios, precios, casos de uso)
 """
 import os
 import yaml
@@ -19,7 +19,6 @@ load_dotenv()
 
 KNOWLEDGE_DIR = Path(__file__).parent.parent / "knowledge"
 
-
 def cargar_negocio() -> dict:
     path = KNOWLEDGE_DIR / "business.yaml"
     if not path.exists():
@@ -27,13 +26,11 @@ def cargar_negocio() -> dict:
     with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-
 def cargar_servicios() -> str:
     path = KNOWLEDGE_DIR / "servicios.md"
     if path.exists():
         return path.read_text(encoding="utf-8")
     return ""
-
 
 def construir_system_prompt(slots_disponibles: str = "", notas_admin: list[dict] | None = None) -> str:
     negocio = cargar_negocio()
@@ -56,13 +53,16 @@ def construir_system_prompt(slots_disponibles: str = "", notas_admin: list[dict]
 AVISOS DEL DUEÑO/ADMINISTRADOR (MÁXIMA PRIORIDAD — hoy es {hoy_str}):
 {bloque_notas}
 
-Cada aviso aplica SOLO a la fecha que indica (o siempre, si dice "sin fecha").
-Cuando el cliente pregunte por disponibilidad de un día en particular (hoy,
-mañana, o cualquier fecha futura), fijate si hay un aviso para ESA fecha
-puntual y aplicalo — aunque el cliente pregunte con anticipación por un día
-que todavía no llegó. Estos avisos pesan MÁS que la sección DISPONIBILIDAD
-y que INFORMACIÓN DEL NEGOCIO: si contradicen lo que dicen esas secciones
-para esa fecha, gana el aviso.
+REGLAS PARA APLICAR ESTOS AVISOS:
+1. Los avisos SIN fecha aplican SIEMPRE, en toda conversación, hasta que se borren.
+2. Los avisos CON fecha aplican SOLO ese día (incluso si el cliente pregunta con anticipación por ese día futuro).
+3. Estos avisos PISAN COMPLETAMENTE las secciones DISPONIBILIDAD e INFORMACIÓN DEL NEGOCIO. Si contradicen algo de esas secciones, gana el aviso, sin excepción.
+4. Si un aviso prohíbe o restringe el agendamiento de llamadas (ej: "no agendes", "sin llamadas", "hasta el X"):
+   - NO ofrezcas horarios disponibles, aunque los veas en la sección DISPONIBILIDAD.
+   - NO invites al cliente a agendar ni menciones que hay slots libres.
+   - Si el cliente pide agendar o pregunta cuándo puede llamar, decile simplemente: "Por el momento no estamos tomando llamadas nuevas, te aviso cuando tengamos disponibilidad 😊" (o similar, sin inventar fechas).
+5. Si un aviso prohíbe ofrecer un servicio, no lo menciones aunque el cliente lo pida directamente.
+
 """
     else:
         seccion_avisos = ""
@@ -92,6 +92,7 @@ FLUJO ESPERADO DE CONVERSACIÓN:
 1. El cliente escribe → escuchás qué necesita / de qué negocio es.
 2. Contás brevemente qué hace Nucleo Digital y cómo podría aplicarse a su caso.
 3. Si muestra interés real, ofrecés agendar una llamada de descubrimiento gratuita de 30 minutos con Braian.
+   IMPORTANTE: antes de ofrecer la llamada, verificá los AVISOS DEL DUEÑO. Si hay alguno que restrinja el agendamiento, NO ofrezcas la llamada — seguí la conversación sin mencionar disponibilidad.
 4. Cuando el cliente acepta: preguntás su nombre (si no lo diste ya) y pedís que elija un horario de los disponibles.
 5. Una vez confirmado nombre + fecha + hora → usás el bloque de acción (ver abajo).
 
@@ -99,6 +100,7 @@ FLUJO ESPERADO DE CONVERSACIÓN:
 
 AGENDAR LLAMADAS:
 Cuando el cliente quiera agendar, mostrá los horarios disponibles de la sección DISPONIBILIDAD más abajo.
+IMPORTANTE: verificá primero los AVISOS DEL DUEÑO. Si hay alguno que restrinja el agendamiento, NO mostrés horarios ni invités a agendar, aunque la sección DISPONIBILIDAD tenga slots libres.
 Pedí solo: nombre completo (o como quiere que lo llames) y el horario que le queda mejor.
 No pidas email ni otros datos — con nombre y horario alcanza.
 
@@ -140,10 +142,9 @@ DISPONIBILIDAD PARA LLAMADAS:
 """
     return prompt
 
-
 # Variables de entorno
-ANTHROPIC_API_KEY     = os.environ.get("ANTHROPIC_API_KEY")
-YCLOUD_API_KEY        = os.environ.get("YCLOUD_API_KEY")
-YCLOUD_PHONE_NUMBER   = os.environ.get("YCLOUD_PHONE_NUMBER")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+YCLOUD_API_KEY    = os.environ.get("YCLOUD_API_KEY")
+YCLOUD_PHONE_NUMBER  = os.environ.get("YCLOUD_PHONE_NUMBER")
 OWNER_WHATSAPP_NUMBER = os.environ.get("OWNER_WHATSAPP_NUMBER")  # número de Braian
-GOOGLE_CALENDAR_ID    = os.environ.get("GOOGLE_CALENDAR_ID")
+GOOGLE_CALENDAR_ID = os.environ.get("GOOGLE_CALENDAR_ID")
