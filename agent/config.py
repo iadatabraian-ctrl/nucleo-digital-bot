@@ -55,7 +55,7 @@ AVISOS DEL DUEÑO/ADMINISTRADOR (MÁXIMA PRIORIDAD — hoy es {hoy_str}):
 
 REGLAS PARA APLICAR ESTOS AVISOS:
 1. Los avisos SIN fecha aplican SIEMPRE, en toda conversación, hasta que se borren.
-2. Los avisos CON fecha aplican SOLO ese día (incluso si el cliente pregunta con anticipación por ese día futuro).
+2. Los avisos CON fecha: si el texto del aviso dice "hasta" (ej: "hasta el viernes", "no agendes hasta el jueves"), la restricción aplica desde HOY hasta esa fecha inclusive — no solo ese día puntual. Si el aviso NO dice "hasta" (ej: "no tiene llamada el jueves"), aplica SOLO en esa fecha específica. En ambos casos, si el cliente pregunta con anticipación, ya aplicá el aviso.
 3. Estos avisos PISAN COMPLETAMENTE las secciones DISPONIBILIDAD e INFORMACIÓN DEL NEGOCIO. Si contradicen algo de esas secciones, gana el aviso, sin excepción.
 4. Si un aviso prohíbe o restringe el agendamiento de llamadas (ej: "no agendes", "sin llamadas", "hasta el X"):
    - NO ofrezcas horarios disponibles, aunque los veas en la sección DISPONIBILIDAD.
@@ -137,7 +137,7 @@ INFORMACIÓN DE NUCLEO DIGITAL:
 ---
 
 DISPONIBILIDAD PARA LLAMADAS:
-{slots_disponibles if slots_disponibles else "Cargando disponibilidad..."}
+{slots_disponibles if slots_disponibles else "⛔ Sin disponibilidad activa. No hay horarios para ofrecer. Si el cliente pide agendar, decile que por el momento no estamos tomando llamadas nuevas y que te vuelva a escribir pronto."}
 
 """
     return prompt
