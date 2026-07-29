@@ -1,10 +1,11 @@
 """
 agent/memory.py
 ----------------
-Historial de conversación, pausas y avisos de admin — TODO guardado en
-Upstash Redis (no en RAM), para que sobreviva a los reinicios/"sueño" del
-servicio en Render (el plan gratis duerme el servicio tras ~15 min de
-inactividad y borra cualquier variable en memoria).
+Historial de conversación, pausas, avisos de admin, horarios especiales por
+día y servicios bloqueados — TODO guardado en Upstash Redis (no en RAM),
+para que sobreviva a los reinicios/"sueño" del servicio en Render (el plan
+gratis duerme el servicio tras ~15 min de inactividad y borra cualquier
+variable en memoria).
 
 Requiere las variables de entorno UPSTASH_REDIS_URL y UPSTASH_REDIS_TOKEN
 (las mismas que aparecen en el panel de Upstash, sección REST API).
@@ -79,6 +80,11 @@ def esta_pausada(numero: str) -> bool:
 # fecha de ese día normalmente — la nota auto-expira al día siguiente. El system
 # prompt le dice a Claude que si el aviso dice "hasta", aplique la restricción
 # desde hoy HASTA esa fecha, no solo ese día puntual.
+#
+# NOTA: este mecanismo de notas genéricas es distinto del de horarios
+# especiales (más abajo) y del de servicios bloqueados. app.py intenta
+# primero esos dos parsers estructurados antes de caer acá — así "el jueves
+# cerrado" y "no ofrezcas X" no terminan como simples notas de texto libre.
 _NOTAS_KEY = "notas_admin"
 
 _DIAS_SEMANA = {
@@ -99,11 +105,6 @@ def _resolver_fecha_mencionada(texto: str) -> date | None:
     """Intenta detectar a qué día se refiere el texto. None = sin referencia (indefinida)."""
     t = texto.lower()
     hoy = _hoy()
-
-    # NOTA: si el texto dice "hasta [día]" (ej: "hasta el viernes"), detectamos
-    # igualmente la fecha de ese día. La nota se guarda como "Para el 31/07: ..."
-    # y auto-expira al día siguiente. Claude entiende por el texto del aviso que
-    # es una restricción de rango (ver config.py regla 2 del bloque de avisos).
 
     if re.search(r"\bhoy\b", t):
         return hoy
@@ -185,6 +186,210 @@ def listar_notas_admin() -> list[dict]:
 
 def limpiar_notas_admin():
     _redis.delete(_NOTAS_KEY)
+
+# ── Horarios especiales por día ─────────────────────────────────────────────
+# Permite planificar la semana día a día en lenguaje natural: "el jueves
+# cerramos", "el miércoles solo de 13 a 16hs", "de miércoles a viernes no
+# abrimos". A diferencia de las notas genéricas de arriba, esto se guarda
+# ESTRUCTURADO (no como texto libre), porque calendar.py lo usa para filtrar
+# los horarios reales en el origen — así el bot nunca puede ofrecer un
+# horario que en realidad está cerrado, sin depender de que Claude
+# interprete bien una instrucción de texto.
+_HORARIOS_KEY_PREFIX = "horario_override:"
+_HORARIOS_ACTIVOS_KEY = "horario_overrides_activos"
+
+_RE_CIERRE = re.compile(
+    r"(no\s+abrimos|no\s+atendemos|cerrado|cerramos|sin\s+atenci[oó]n|"
+    r"no\s+hay\s+atenci[oó]n|no\s+trabajamos)",
+    re.IGNORECASE,
+)
+_RE_APERTURA_RESET = re.compile(
+    r"(abrimos\s+normal|atendemos\s+normal|horario\s+normal|(?:^|\s)s[ií]\.?$)",
+    re.IGNORECASE,
+)
+_RE_RANGO_DIAS = re.compile(
+    r"\bde\s+(" + "|".join(_DIAS_SEMANA) + r")\s+a\s+(" + "|".join(_DIAS_SEMANA) + r")\b",
+    re.IGNORECASE,
+)
+_RE_HORA_RANGO = re.compile(
+    r"de\s+(\d{1,2})(?::(\d{2}))?\s*(?:a|hasta)\s+(\d{1,2})(?::(\d{2}))?"
+    r"\s*(?:hs\.?|horas?)?\s*(de\s+la\s+tarde|de\s+la\s+ma[ñn]ana|de\s+la\s+noche)?",
+    re.IGNORECASE,
+)
+
+def _ajustar_hora_tarde(hora: int, sufijo: str | None) -> int:
+    """Convierte '1 de la tarde' -> 13, dejando '9 de la mañana' -> 9 sin tocar."""
+    if sufijo and ("tarde" in sufijo.lower() or "noche" in sufijo.lower()) and hora <= 6:
+        return hora + 12
+    return hora
+
+def _registrar_fecha_override(fecha: date):
+    activos = _leer_fechas_override()
+    if fecha.isoformat() not in activos:
+        activos.append(fecha.isoformat())
+        _redis.set(_HORARIOS_ACTIVOS_KEY, json.dumps(activos))
+
+def _leer_fechas_override() -> list[str]:
+    crudo = _redis.get(_HORARIOS_ACTIVOS_KEY)
+    return json.loads(crudo) if crudo else []
+
+def _extraer_fechas_horario(texto: str) -> list[date]:
+    """Un solo día ('el jueves') o un rango ('de miércoles a viernes')."""
+    t = texto.lower()
+    m_rango = _RE_RANGO_DIAS.search(t)
+    if m_rango:
+        hoy = _hoy()
+        idx1 = _DIAS_SEMANA[m_rango.group(1)]
+        idx2 = _DIAS_SEMANA[m_rango.group(2)]
+        inicio = hoy + timedelta(days=(idx1 - hoy.weekday()) % 7)
+        fin = hoy + timedelta(days=(idx2 - hoy.weekday()) % 7)
+        if fin < inicio:
+            fin += timedelta(days=7)
+        dias = []
+        cursor = inicio
+        while cursor <= fin:
+            dias.append(cursor)
+            cursor += timedelta(days=1)
+        return dias
+
+    fecha_unica = _resolver_fecha_mencionada(texto)
+    return [fecha_unica] if fecha_unica else []
+
+def intentar_registrar_horario(texto: str) -> str | None:
+    """
+    Si el texto describe un cambio de horario (cierre, apertura/reset, o rango
+    horario para uno o varios días), lo guarda estructurado y devuelve un
+    mensaje de confirmación con lo que se entendió. Si no reconoce un patrón
+    de horario claro, devuelve None — el llamador (app.py) debe entonces
+    tratarlo como una nota de admin genérica (agregar_nota_admin).
+    """
+    fechas = _extraer_fechas_horario(texto)
+    if not fechas:
+        return None
+
+    es_cierre = bool(_RE_CIERRE.search(texto))
+    es_apertura = bool(_RE_APERTURA_RESET.search(texto.strip()))
+    m_hora = _RE_HORA_RANGO.search(texto)
+
+    if not (es_cierre or es_apertura or m_hora):
+        return None  # menciona un día pero no da ninguna instrucción de horario clara
+
+    dias_str = " y ".join(f.strftime("%d/%m") for f in fechas)
+
+    if es_apertura and not es_cierre and not m_hora:
+        for fecha in fechas:
+            _redis.delete(f"{_HORARIOS_KEY_PREFIX}{fecha.isoformat()}")
+        return f"Anotado ✅: horario normal restaurado para {dias_str}."
+
+    if es_cierre:
+        for fecha in fechas:
+            _redis.set(
+                f"{_HORARIOS_KEY_PREFIX}{fecha.isoformat()}",
+                json.dumps({"cerrado": True, "desde": None, "hasta": None}),
+            )
+            _registrar_fecha_override(fecha)
+        return f"Anotado ✅: {dias_str} — cerrado, no se agenda ese día."
+
+    if m_hora:
+        h1 = _ajustar_hora_tarde(int(m_hora.group(1)), m_hora.group(5))
+        m1 = int(m_hora.group(2) or 0)
+        h2 = _ajustar_hora_tarde(int(m_hora.group(3)), m_hora.group(5))
+        m2 = int(m_hora.group(4) or 0)
+        desde = f"{h1:02d}:{m1:02d}"
+        hasta = f"{h2:02d}:{m2:02d}"
+        for fecha in fechas:
+            _redis.set(
+                f"{_HORARIOS_KEY_PREFIX}{fecha.isoformat()}",
+                json.dumps({"cerrado": False, "desde": desde, "hasta": hasta}),
+            )
+            _registrar_fecha_override(fecha)
+        return f"Anotado ✅: {dias_str} — atención restringida de {desde} a {hasta}."
+
+    return None
+
+def obtener_horario_override(fecha: date) -> dict | None:
+    """
+    {'cerrado': bool, 'desde': 'HH:MM'|None, 'hasta': 'HH:MM'|None} para esa
+    fecha, o None si no hay ningún horario especial guardado.
+    """
+    crudo = _redis.get(f"{_HORARIOS_KEY_PREFIX}{fecha.isoformat()}")
+    if not crudo:
+        return None
+    return json.loads(crudo)
+
+def listar_horarios_activos() -> list[dict]:
+    """Todos los horarios especiales vigentes (hoy o futuros), para consulta del admin."""
+    hoy = _hoy()
+    activos = _leer_fechas_override()
+    vigentes = []
+    resultado = []
+    for f_str in activos:
+        f = date.fromisoformat(f_str)
+        if f < hoy:
+            continue
+        override = obtener_horario_override(f)
+        if override:
+            resultado.append({"fecha": f, **override})
+            vigentes.append(f_str)
+    if vigentes != activos:
+        _redis.set(_HORARIOS_ACTIVOS_KEY, json.dumps(vigentes))
+    return sorted(resultado, key=lambda x: x["fecha"])
+
+# ── Servicios bloqueados (no ofrecer) ───────────────────────────────────────
+# Detecta frases tipo "no ofrezcas/no vendas servicios de X" en los mensajes
+# de admin, y guarda la palabra clave. config.py usa esta lista para sacar
+# esa sección entera de knowledge/servicios.md antes de mandarla a Claude —
+# así el bot no tiene ni la información para poder ofrecerlo, en vez de
+# depender de que el LLM "se acuerde" de no mencionarlo.
+_SERVICIOS_BLOQUEADOS_KEY = "servicios_bloqueados"
+
+_RE_BLOQUEAR_SERVICIO = re.compile(
+    r"no\s+(?:ofrezcas|ofrezcamos|vendas|vendamos|promociones|promocion[eé]s)\s+"
+    r"(?:servicios?\s+de\s+|el\s+servicio\s+de\s+)?(.+)",
+    re.IGNORECASE,
+)
+
+def intentar_bloquear_servicio(texto: str) -> str | None:
+    """
+    Si el texto pide bloquear un servicio ("no ofrezcas X"), guarda la
+    palabra clave y devuelve confirmación. Si no matchea el patrón, None —
+    el llamador debe tratarlo como nota genérica.
+    """
+    m = _RE_BLOQUEAR_SERVICIO.search(texto.strip())
+    if not m:
+        return None
+    keyword = m.group(1).strip().rstrip(".").lower()
+    if not keyword:
+        return None
+    bloqueados = obtener_servicios_bloqueados()
+    if keyword not in bloqueados:
+        bloqueados.append(keyword)
+        _redis.set(_SERVICIOS_BLOQUEADOS_KEY, json.dumps(bloqueados))
+    return f"Anotado ✅: no se va a ofrecer más \"{keyword}\"."
+
+def obtener_servicios_bloqueados() -> list[str]:
+    crudo = _redis.get(_SERVICIOS_BLOQUEADOS_KEY)
+    if not crudo:
+        return []
+    return json.loads(crudo)
+
+def desbloquear_servicio(keyword: str) -> bool:
+    """Devuelve True si estaba bloqueado y se sacó, False si no estaba."""
+    bloqueados = obtener_servicios_bloqueados()
+    keyword = keyword.strip().lower()
+    if keyword not in bloqueados:
+        return False
+    bloqueados.remove(keyword)
+    _redis.set(_SERVICIOS_BLOQUEADOS_KEY, json.dumps(bloqueados))
+    return True
+
+def limpiar_todo():
+    """Reset completo: notas de admin, horarios especiales y servicios bloqueados."""
+    limpiar_notas_admin()
+    for f_str in _leer_fechas_override():
+        _redis.delete(f"{_HORARIOS_KEY_PREFIX}{f_str}")
+    _redis.delete(_HORARIOS_ACTIVOS_KEY)
+    _redis.delete(_SERVICIOS_BLOQUEADOS_KEY)
 
 # ── Catálogo de productos (mapeo product_retailer_id -> nombre) ────────────
 # Se guarda en Redis para que sobreviva reinicios. Se administra desde
