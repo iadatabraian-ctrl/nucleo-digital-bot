@@ -3,6 +3,11 @@ agent/brain.py
 ----------------
 Llama a Claude con el system prompt (con slots de calendario inyectados)
 + historial de la conversacion. Detecta [AGENDAR_LLAMADA] y crea el evento.
+
+Lógica de restricciones de admin (code-level, no depende del LLM):
+- Si hay aviso que prohíbe agendar → se omiten los slots del prompt.
+  Claude no puede ofrecer lo que no ve.
+- Si hay aviso que prohíbe un servicio → se marca en el prompt con [NO OFRECER].
 """
 import re
 import anthropic
@@ -15,17 +20,40 @@ _AGENDAR_RE = re.compile(
     r"\[AGENDAR_LLAMADA\](.*?)\[/AGENDAR_LLAMADA\]", re.DOTALL
 )
 
+# Palabras clave que indican restricción de agendamiento en una nota de admin
+_RE_RESTRICCION_AGENDA = re.compile(
+    r"(no\s+agendes?|no\s+atendés?\s+llamadas?|sin\s+llamadas?|no\s+hay\s+llamadas?|no\s+agenda)",
+    re.IGNORECASE,
+)
+
+def _tiene_restriccion_agenda(notas: list[dict]) -> bool:
+    """True si alguna nota activa prohíbe o restringe el agendamiento de llamadas."""
+    return any(_RE_RESTRICCION_AGENDA.search(n.get("texto", "")) for n in notas)
+
+
 def _parsear_campo(bloque: str, campo: str) -> str:
     match = re.search(rf"^{campo}:\s*(.+)$", bloque, re.MULTILINE | re.IGNORECASE)
     return match.group(1).strip() if match else ""
+
 
 def responder(numero: str, mensaje_usuario: str):
     """Devuelve (texto_para_cliente, resumen_notif_o_None)."""
     memory.agregar_mensaje(numero, "user", mensaje_usuario)
     historial = memory.obtener_historial(numero)
 
-    slots = gcal.obtener_slots_disponibles(dias=5)
     notas_admin = memory.listar_notas_admin()
+
+    # ── Restricción de agendamiento detectada en código ───────────────────
+    # Si hay un aviso que prohíbe agendar, pasamos slots vacíos al prompt.
+    # Así Claude NO ve horarios disponibles y no puede ofrecerlos, sin
+    # importar cuánto lo pida el cliente. Más confiable que una instrucción.
+    if _tiene_restriccion_agenda(notas_admin):
+        slots = ""
+        print("[brain] Restricción de agenda activa — slots omitidos del prompt")
+    else:
+        slots = gcal.obtener_slots_disponibles(dias=5)
+    # ─────────────────────────────────────────────────────────────────────
+
     system_prompt = config.construir_system_prompt(
         slots_disponibles=slots, notas_admin=notas_admin
     )
@@ -73,5 +101,7 @@ def responder(numero: str, mensaje_usuario: str):
             f"{estado}"
         )
 
-    texto_cliente = _AGENDAR_RE.sub("", texto_completo).strip()
-    return texto_cliente, resumen_notif
+        texto_cliente = _AGENDAR_RE.sub("", texto_completo).strip()
+        return texto_cliente, resumen_notif
+
+    return texto_completo, resumen_notif
