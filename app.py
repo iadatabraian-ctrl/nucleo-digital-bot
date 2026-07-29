@@ -27,8 +27,8 @@ limiter = Limiter(
 
 # ── Buffer de mensajes: agrupa mensajes seguidos del mismo cliente ──────────
 # antes de llamar a Claude, para no responder mensaje por mensaje.
-BUFFER_VENTANA_SEG = 8  # espera tras el ÚLTIMO mensaje antes de responder
-BUFFER_MAX_SEG = 20  # tope absoluto desde el PRIMER mensaje del lote
+BUFFER_VENTANA_SEG = 12  # espera tras el ÚLTIMO mensaje antes de responder
+BUFFER_MAX_SEG = 30  # tope absoluto desde el PRIMER mensaje del lote
 
 _buffers: dict[str, dict] = {}
 _buffers_lock = threading.Lock()
