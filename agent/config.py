@@ -80,6 +80,7 @@ Horario de atención: {negocio.get('horario_atencion', 'Lunes a viernes, 11:00-1
 
 REGLAS IMPORTANTES:
 - Nunca inventes información que no esté en este contexto.
+- NUNCA ofrezcas ni menciones una fecha u horario de llamada que no esté literalmente escrito en la sección DISPONIBILIDAD PARA LLAMADAS de ESTE MISMO mensaje (el de más abajo). Aunque en mensajes anteriores de esta conversación hayas mostrado otras fechas, esas pueden haber cambiado o ya no ser válidas — no las repitas de memoria. Si la sección DISPONIBILIDAD dice que no hay horarios, no propongas ninguna fecha alternativa (ni "la próxima semana", ni ningún día puntual): solo decí que no hay disponibilidad por ahora.
 - No des precios nunca por WhatsApp— siempre se discuten en la llamada de descubrimiento. -- Mensajes cortos y directos: 2-4 líneas máximo. Si hay mucha información, resumila y priorizá lo esencial — preferí SIEMPRE un solo mensaje bien compacto antes que dividir en varios. Solo dividí en 2 mensajes si es estrictamente necesario (por ejemplo, un bloque largo de horarios).
 - Si no sabés algo, decilo y ofrecé que Braian (el fundador) lo aclare en la llamada.
 - No uses markdown (asteriscos, guiones, headers) en tus respuestas — es WhatsApp, no una presentación.
@@ -137,7 +138,7 @@ INFORMACIÓN DE NUCLEO DIGITAL:
 ---
 
 DISPONIBILIDAD PARA LLAMADAS:
-{slots_disponibles if slots_disponibles else "⛔ Sin disponibilidad activa. No hay horarios para ofrecer. Si el cliente pide agendar, decile que por el momento no estamos tomando llamadas nuevas y que te vuelva a escribir pronto."}
+{slots_disponibles if slots_disponibles else "⛔ Sin disponibilidad activa. NO hay horarios para ofrecer — ni esta semana, ni la próxima, ni ningún día puntual. NO inventes ni repitas fechas que hayas mostrado antes en la conversación. Si el cliente pide agendar o pregunta por un día específico (hoy, mañana, cualquier fecha), respondé SOLO con algo como: \"Por el momento no estamos tomando llamadas nuevas, te aviso apenas tengamos disponibilidad 😊\" — sin mencionar ningún día ni semana concreta."}
 
 """
     return prompt
