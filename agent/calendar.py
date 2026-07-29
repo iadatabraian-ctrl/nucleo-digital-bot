@@ -1,15 +1,27 @@
+"""
+agent/calendar.py
+------------------
+Disponibilidad y creación de eventos en Google Calendar.
+
+Los horarios especiales por día (cierres puntuales o ventanas horarias
+reducidas, cargados por el admin vía WhatsApp — ver memory.py) se aplican
+ACÁ, en el origen de los datos: si un día está cerrado no se generan slots
+para ese día, y si tiene un rango reducido, solo se generan slots dentro de
+esa ventana. Así el bot nunca puede ofrecer un horario que en realidad no
+está disponible, sin depender de que el LLM lo recuerde.
+"""
 import os
 import json
 import base64
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, date
 import pytz
+from agent import memory
 
 TIMEZONE = pytz.timezone("America/Montevideo")
 HORA_INICIO = time(9, 0)
 HORA_FIN = time(18, 0)
 DURACION_SLOT_MIN = 45
 MARGEN_MIN = 60
-
 
 def _get_service():
     try:
@@ -28,7 +40,6 @@ def _get_service():
     creds = Credentials.from_service_account_info(service_account_info, scopes=scopes)
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
-
 def _dias_habiles(desde, cantidad):
     dias = []
     cursor = desde.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -38,17 +49,17 @@ def _dias_habiles(desde, cantidad):
             dias.append(cursor)
     return dias
 
-
-def _slots_del_dia(dia):
+def _slots_del_dia(dia, hora_inicio: time = None, hora_fin: time = None):
+    hora_inicio = hora_inicio or HORA_INICIO
+    hora_fin = hora_fin or HORA_FIN
     slots = []
-    cursor = TIMEZONE.localize(datetime.combine(dia.date(), HORA_INICIO))
-    fin_dia = TIMEZONE.localize(datetime.combine(dia.date(), HORA_FIN))
+    cursor = TIMEZONE.localize(datetime.combine(dia.date(), hora_inicio))
+    fin_dia = TIMEZONE.localize(datetime.combine(dia.date(), hora_fin))
     delta = timedelta(minutes=DURACION_SLOT_MIN)
     while cursor + delta <= fin_dia:
         slots.append(cursor)
         cursor += delta
     return slots
-
 
 def _periodos_ocupados(service, calendar_id, dias):
     if not dias:
@@ -73,7 +84,6 @@ def _periodos_ocupados(service, calendar_id, dias):
         ocupados.append((inicio, fin))
     return ocupados
 
-
 def _slot_libre(slot, ocupados):
     slot_utc = slot.astimezone(pytz.utc)
     fin_slot = slot_utc + timedelta(minutes=DURACION_SLOT_MIN)
@@ -82,6 +92,26 @@ def _slot_libre(slot, ocupados):
             return False
     return True
 
+def horario_permitido(fecha: date, hora: time) -> bool:
+    """
+    True si ese día/hora está dentro de la ventana de atención — considerando
+    cierres puntuales o rangos horarios especiales cargados por el admin.
+    Se usa como última validación antes de crear un evento en Calendar.
+    """
+    override = memory.obtener_horario_override(fecha)
+    if override:
+        if override.get("cerrado"):
+            return False
+        desde = (
+            datetime.strptime(override["desde"], "%H:%M").time()
+            if override.get("desde") else HORA_INICIO
+        )
+        hasta = (
+            datetime.strptime(override["hasta"], "%H:%M").time()
+            if override.get("hasta") else HORA_FIN
+        )
+        return desde <= hora <= hasta
+    return HORA_INICIO <= hora <= HORA_FIN
 
 def obtener_slots_disponibles(dias=5):
     calendar_id = os.environ.get("GOOGLE_CALENDAR_ID", "")
@@ -102,10 +132,22 @@ def obtener_slots_disponibles(dias=5):
             "Thursday": "Jueves", "Friday": "Viernes",
         }
         for dia in proximos_dias:
+            override = memory.obtener_horario_override(dia.date())
+            if override and override.get("cerrado"):
+                continue  # día cerrado por horario especial — no se generan slots
+
+            hora_inicio_dia = HORA_INICIO
+            hora_fin_dia = HORA_FIN
+            if override:
+                if override.get("desde"):
+                    hora_inicio_dia = datetime.strptime(override["desde"], "%H:%M").time()
+                if override.get("hasta"):
+                    hora_fin_dia = datetime.strptime(override["hasta"], "%H:%M").time()
+
             nombre_dia = dia.strftime("%A %d/%m").capitalize()
             for en, es in traducciones.items():
                 nombre_dia = nombre_dia.replace(en, es)
-            for slot in _slots_del_dia(dia):
+            for slot in _slots_del_dia(dia, hora_inicio_dia, hora_fin_dia):
                 if slot <= margen:
                     continue
                 if _slot_libre(slot, ocupados):
@@ -121,7 +163,6 @@ def obtener_slots_disponibles(dias=5):
     except Exception as e:
         print(f"[calendar] Error obteniendo disponibilidad: {e}")
         return "No pude verificar disponibilidad. Braian lo va a contactar."
-
 
 def crear_evento(fecha_str, hora_str, nombre_cliente, numero_cliente, tema=""):
     calendar_id = os.environ.get("GOOGLE_CALENDAR_ID", "")
