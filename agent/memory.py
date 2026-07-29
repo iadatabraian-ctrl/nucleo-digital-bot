@@ -75,10 +75,10 @@ def esta_pausada(numero: str) -> bool:
 # menciona ningún día (ej: "no vendemos más el modelo X"), queda indefinida
 # hasta /limpiar.
 #
-# EXCEPCIÓN: si el texto contiene "hasta" antes de un día ("hasta el viernes",
-# "hasta mañana"), se trata como restricción de rango INDEFINIDA — queda activa
-# hasta que el dueño la limpie manualmente con /limpiar. Esto evita que
-# "no agendes hasta el viernes" se interprete como "aplica solo el viernes".
+# Si el texto contiene "hasta [día]" (ej: "hasta el viernes"), se guarda la
+# fecha de ese día normalmente — la nota auto-expira al día siguiente. El system
+# prompt le dice a Claude que si el aviso dice "hasta", aplique la restricción
+# desde hoy HASTA esa fecha, no solo ese día puntual.
 _NOTAS_KEY = "notas_admin"
 
 _DIAS_SEMANA = {
@@ -100,11 +100,10 @@ def _resolver_fecha_mencionada(texto: str) -> date | None:
     t = texto.lower()
     hoy = _hoy()
 
-    # Si hay "hasta [fecha/día]", es una restricción de rango → nota indefinida.
-    # Ejemplo: "hasta el viernes", "hasta mañana", "hasta el 31/07".
-    # El dueño deberá limpiarla manualmente con /limpiar cuando corresponda.
-    if re.search(r"\bhasta\b", t):
-        return None
+    # NOTA: si el texto dice "hasta [día]" (ej: "hasta el viernes"), detectamos
+    # igualmente la fecha de ese día. La nota se guarda como "Para el 31/07: ..."
+    # y auto-expira al día siguiente. Claude entiende por el texto del aviso que
+    # es una restricción de rango (ver config.py regla 2 del bloque de avisos).
 
     if re.search(r"\bhoy\b", t):
         return hoy
