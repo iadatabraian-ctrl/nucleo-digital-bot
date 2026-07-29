@@ -26,6 +26,22 @@ _RE_RESTRICCION_AGENDA = re.compile(
     re.IGNORECASE,
 )
 
+# Detecta si Claude menciona una fecha/día puntual en su respuesta — usado como
+# red de seguridad: si NO hay slots reales (restricción activa) pero Claude
+# igual menciona un día, es una fecha inventada (de memoria del historial o
+# alucinada) y hay que bloquearla en código, sin confiar en que el modelo
+# respete la instrucción del prompt.
+_RE_FECHA_MENCION = re.compile(
+    r"(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|"
+    r"\d{1,2}\s*/\s*\d{1,2}|pr[oó]xima\s+semana|esta\s+semana)",
+    re.IGNORECASE,
+)
+
+_MENSAJE_SIN_DISPONIBILIDAD = (
+    "Por el momento no estamos tomando llamadas nuevas, te aviso apenas "
+    "tengamos disponibilidad 😊"
+)
+
 def _tiene_restriccion_agenda(notas: list[dict]) -> bool:
     """True si alguna nota activa prohíbe o restringe el agendamiento de llamadas."""
     return any(_RE_RESTRICCION_AGENDA.search(n.get("texto", "")) for n in notas)
@@ -66,14 +82,27 @@ def responder(numero: str, mensaje_usuario: str):
     )
 
     texto_completo = respuesta.content[0].text
-    memory.agregar_mensaje(numero, "assistant", texto_completo)
 
     # DEBUG: ver respuesta completa de Claude
     print(f"[brain] Respuesta Claude: {texto_completo[:500]}")
-    match_debug = _AGENDAR_RE.search(texto_completo)
-    print(f"[brain] Bloque AGENDAR encontrado: {bool(match_debug)}")
-
     match = _AGENDAR_RE.search(texto_completo)
+    print(f"[brain] Bloque AGENDAR encontrado: {bool(match)}")
+
+    # ── Red de seguridad: sin slots reales, no se agenda ni se mencionan fechas ──
+    # No confiamos en que el modelo respete la instrucción del prompt al 100%.
+    # Si no hay disponibilidad real (restricción de admin activa) pero Claude
+    # igual armó un bloque [AGENDAR_LLAMADA] o mencionó un día puntual (sacado
+    # de la memoria de mensajes anteriores), se anula acá en código y se
+    # reemplaza por el mensaje seguro — así nunca se crea un evento fantasma
+    # ni se le promete al cliente una fecha que no es real.
+    if not slots and (match or _RE_FECHA_MENCION.search(texto_completo)):
+        print("[brain] Respuesta bloqueada: mencionaba fecha/agenda sin disponibilidad real")
+        texto_completo = _MENSAJE_SIN_DISPONIBILIDAD
+        match = None
+    # ─────────────────────────────────────────────────────────────────────────
+
+    memory.agregar_mensaje(numero, "assistant", texto_completo)
+
     resumen_notif = None
 
     if match:
