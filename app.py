@@ -27,12 +27,11 @@ limiter = Limiter(
 
 # ── Buffer de mensajes: agrupa mensajes seguidos del mismo cliente ──────────
 # antes de llamar a Claude, para no responder mensaje por mensaje.
-BUFFER_VENTANA_SEG = 8   # espera tras el ÚLTIMO mensaje antes de responder
-BUFFER_MAX_SEG = 20      # tope absoluto desde el PRIMER mensaje del lote
+BUFFER_VENTANA_SEG = 8  # espera tras el ÚLTIMO mensaje antes de responder
+BUFFER_MAX_SEG = 20  # tope absoluto desde el PRIMER mensaje del lote
 
 _buffers: dict[str, dict] = {}
 _buffers_lock = threading.Lock()
-
 
 def _procesar_buffer(numero: str):
     with _buffers_lock:
@@ -52,14 +51,13 @@ def _procesar_buffer(numero: str):
         respuesta, resumen_notif = responder(numero, texto_combinado)
     except Exception as e:
         print(f"[ERROR en brain.responder] {e}")
-        respuesta     = "Disculpá, tuve un problema procesando tu mensaje. Ya te contactamos."
+        respuesta = "Disculpá, tuve un problema procesando tu mensaje. Ya te contactamos."
         resumen_notif = None
 
     proveedor_activo.enviar_mensaje(numero, respuesta)
 
     if resumen_notif and config.OWNER_WHATSAPP_NUMBER:
         proveedor_activo.enviar_mensaje(config.OWNER_WHATSAPP_NUMBER, resumen_notif)
-
 
 def _agregar_a_buffer(numero: str, texto: str):
     ahora = time.time()
@@ -86,20 +84,17 @@ def _agregar_a_buffer(numero: str, texto: str):
     print(f"[buffer] {numero}: mensaje agregado, responde en {espera:.1f}s")
 # ─────────────────────────────────────────────────────────────────────────────
 
-
 def _normalizar_numero(numero: str) -> str:
     """Deja solo dígitos, para comparar números aunque vengan con +/espacios distinto."""
     return "".join(c for c in (numero or "") if c.isdigit())
 
-
 @app.route("/webhook", methods=["GET"])
 def verificar_webhook():
-    modo      = request.args.get("hub.mode")
+    modo = request.args.get("hub.mode")
     challenge = request.args.get("hub.challenge")
     if modo == "subscribe" and challenge:
         return challenge, 200
     return "ok", 200
-
 
 @app.route("/webhook", methods=["POST"])
 @limiter.limit("30 per minute")
@@ -136,7 +131,7 @@ def recibir_mensaje():
             print(f"[coexistence] Pausa INDEFINIDA activada para {numero_pausado} — 100% manual")
         else:
             memory.pausar_conversacion(numero_pausado)
-            print(f"[coexistence] Dueño tomó la conversación con {numero_pausado} — bot pausado 2hs")
+            print(f"[coexistence] Dueño tomó la conversación con {numero_pausado} — bot pausado {memory.PAUSA_HORAS_DEFAULT}hs")
         return "ok", 200
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -145,7 +140,7 @@ def recibir_mensaje():
     if mensaje is None:
         return "ok", 200
 
-    numero        = mensaje["numero"]
+    numero = mensaje["numero"]
     texto_usuario = mensaje["texto"]
 
     # ── Producto de catálogo sin identificar: avisar al admin ───────────────
@@ -197,8 +192,12 @@ def recibir_mensaje():
         # ─────────────────────────────────────────────────────────────────────
 
         if texto_limpio.lower() == "/limpiar":
-            memory.limpiar_notas_admin()
-            proveedor_activo.enviar_mensaje(numero, "Listo, borré todos los avisos 👍")
+            memory.limpiar_todo()
+            proveedor_activo.enviar_mensaje(
+                numero, "Listo, borré todos los avisos, horarios especiales y servicios bloqueados 👍"
+            )
+            return "ok", 200
+
         elif texto_limpio.lower() == "/avisos":
             notas = memory.listar_notas_admin()
             if not notas:
@@ -213,7 +212,64 @@ def recibir_mensaje():
                 proveedor_activo.enviar_mensaje(
                     numero, "Avisos activos:\n" + "\n".join(lineas)
                 )
+            return "ok", 200
+
+        elif texto_limpio.lower() == "/horarios":
+            overrides = memory.listar_horarios_activos()
+            if not overrides:
+                proveedor_activo.enviar_mensaje(numero, "No tenés ningún horario especial activo — todo en horario normal. 👍")
+            else:
+                lineas = []
+                for o in overrides:
+                    if o["cerrado"]:
+                        lineas.append(f"• {o['fecha'].strftime('%d/%m')} — cerrado")
+                    else:
+                        lineas.append(f"• {o['fecha'].strftime('%d/%m')} — {o['desde']} a {o['hasta']}")
+                proveedor_activo.enviar_mensaje(
+                    numero, "Horarios especiales activos:\n" + "\n".join(lineas)
+                )
+            return "ok", 200
+
+        elif texto_limpio.lower() == "/servicios_bloqueados":
+            bloqueados = memory.obtener_servicios_bloqueados()
+            if not bloqueados:
+                proveedor_activo.enviar_mensaje(numero, "No tenés ningún servicio bloqueado ahora mismo. 👍")
+            else:
+                lineas = [f"• {b}" for b in bloqueados]
+                proveedor_activo.enviar_mensaje(
+                    numero, "Servicios bloqueados:\n" + "\n".join(lineas)
+                )
+            return "ok", 200
+
+        elif texto_limpio.lower().startswith("/desbloquear "):
+            keyword = texto_limpio.split(" ", 1)[1].strip()
+            ok = memory.desbloquear_servicio(keyword)
+            if ok:
+                proveedor_activo.enviar_mensaje(numero, f"Listo ✅, volvés a ofrecer \"{keyword}\".")
+            else:
+                proveedor_activo.enviar_mensaje(
+                    numero,
+                    f"No tenía bloqueado nada que coincida con \"{keyword}\". "
+                    f"Probá /servicios_bloqueados para ver la lista exacta.",
+                )
+            return "ok", 200
+
         else:
+            # 1) ¿Es un cambio de horario? ("el jueves cerrado", "de miércoles
+            #    a viernes solo de 13 a 16hs", "el miércoles sí" para resetear).
+            confirmacion_horario = memory.intentar_registrar_horario(texto_limpio)
+            if confirmacion_horario:
+                proveedor_activo.enviar_mensaje(numero, confirmacion_horario)
+                return "ok", 200
+
+            # 2) ¿Es un bloqueo de servicio? ("no ofrezcas servicios de X")
+            confirmacion_bloqueo = memory.intentar_bloquear_servicio(texto_limpio)
+            if confirmacion_bloqueo:
+                proveedor_activo.enviar_mensaje(numero, confirmacion_bloqueo)
+                return "ok", 200
+
+            # 3) Si no es ninguna de las anteriores, es un aviso genérico
+            #    para que Claude lo tenga en cuenta en la conversación.
             fecha_resuelta = memory.agregar_nota_admin(texto_limpio)
             if fecha_resuelta:
                 aviso_fecha = f"Válido para el {fecha_resuelta.strftime('%d/%m')} — se borra solo después."
@@ -241,11 +297,9 @@ def recibir_mensaje():
 
     return "ok", 200
 
-
 @app.route("/", methods=["GET"])
 def health():
     return "Nucleo Digital Bot — corriendo ✅", 200
-
 
 if __name__ == "__main__":
     app.run(port=5000)
