@@ -2,9 +2,10 @@
 
 ## ¿Qué hace Nucleo Digital?
 
-Ayudamos a negocios, emprendedores y pymes a trabajar menos horas en tareas
-repetitivas y ganar más clientes usando inteligencia artificial y automatizaciones.
-No hace falta saber de tecnología — nosotros nos ocupamos de todo.
+Ayudamos a concesionarias, inmobiliarias y negocios locales con alto volumen
+de mensajes a automatizar la atención por WhatsApp: responder consultas,
+calificar clientes y agendar turnos, sin perder ventas por no contestar a
+tiempo. No hace falta saber de tecnología — nosotros nos ocupamos de todo.
 
 ---
 
@@ -17,9 +18,12 @@ Ideal para negocios que reciben muchos mensajes y pierden ventas por no responde
 a tiempo.
 
 **Casos de uso reales:**
+- Concesionaria: el bot muestra el catálogo de unidades disponibles, responde
+  consultas de precio y financiación, y agenda el turno de prueba de manejo
+- Inmobiliaria: el bot califica si el cliente puede comprar/alquilar (presupuesto,
+  zona, tipo de propiedad) antes de pasarlo a un asesor humano
 - Negocio de delivery o productos: el bot toma el pedido completo solo
 - Clínica o estudio: el bot agenda turnos y envía recordatorios
-- Inmobiliaria: el bot califica si el cliente puede comprar/alquilar antes de pasarlo a un asesor
 
 ---
 
@@ -58,22 +62,22 @@ anuncios, automatización de email marketing, análisis de resultados.
 ## ¿Cuánto cuesta?
 
 Depende del proyecto y del alcance. El primer paso es una llamada de
-descubrimiento gratuita de 30 minutos donde Braian entiende la situación del
+descubrimiento gratuita de 15 minutos donde Braian entiende la situación del
 negocio y arma una propuesta a medida. Sin compromiso.
 
 ---
 
 ## ¿Para quién es esto?
 
-- Negocios locales que quieren crecer sin contratar más personal
-- Emprendedores que quieren automatizar tareas repetitivas
-- Pymes que reciben muchos mensajes y no dan abasto
+- Concesionarias que reciben consultas de autos fuera de horario y las pierden
+- Inmobiliarias que necesitan calificar rápido si un cliente puede comprar/alquilar
+- Negocios locales en general que reciben muchos mensajes y no dan abasto
 - Cualquiera que quiera entender cómo la IA puede aplicarse a su negocio específico
 
 ---
 
 ## ¿Cómo empezar?
 
-El primer paso siempre es una llamada de 30 minutos (gratis) para entender
+El primer paso siempre es una llamada de 15 minutos (gratis) para entender
 tu situación y ver si tenemos solución para lo que necesitás. Si aplica,
 te mandamos una propuesta. Si no aplica, te lo decimos igual — no perdés nada.
