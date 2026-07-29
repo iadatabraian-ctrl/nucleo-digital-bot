@@ -1,215 +1,212 @@
 """
-agent/config.py
-----------------
-Carga knowledge/business.yaml + knowledge/servicios.md + knowledge/perfil_cliente.md
-y construye el system prompt para Claude. También expone las variables de entorno.
+agent/calendar.py
+------------------
+Disponibilidad y creación de eventos en Google Calendar.
 
-Para cambiar el comportamiento del bot sin tocar código:
-→ Editá knowledge/business.yaml (tono, objetivo, etc.)
-→ Editá knowledge/servicios.md (servicios, precios, casos de uso)
-→ Editá knowledge/perfil_cliente.md (criterio de qué negocios calificar)
+Los horarios especiales por día (cierres puntuales o ventanas horarias
+reducidas, cargados por el admin vía WhatsApp — ver memory.py) se aplican
+ACÁ, en el origen de los datos: si un día está cerrado no se generan slots
+para ese día, y si tiene un rango reducido, solo se generan slots dentro de
+esa ventana. Así el bot nunca puede ofrecer un horario que en realidad no
+está disponible, sin depender de que el LLM lo recuerde.
 """
 import os
-import yaml
-from pathlib import Path
-from datetime import datetime
+import json
+import base64
+from datetime import datetime, timedelta, time, date
 import pytz
-from dotenv import load_dotenv
 from agent import memory
 
-load_dotenv()
+TIMEZONE = pytz.timezone("America/Montevideo")
+HORA_INICIO = time(9, 0)
+HORA_FIN = time(18, 0)
+DURACION_SLOT_MIN = 45
+MARGEN_MIN = 60
 
-KNOWLEDGE_DIR = Path(__file__).parent.parent / "knowledge"
+def _get_service():
+    try:
+        from google.oauth2.service_account import Credentials
+        from googleapiclient.discovery import build
+    except ImportError:
+        raise RuntimeError("Faltan dependencias de Google.")
+    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+    if not raw:
+        raise ValueError("GOOGLE_SERVICE_ACCOUNT_JSON no configurada.")
+    try:
+        service_account_info = json.loads(raw)
+    except json.JSONDecodeError:
+        service_account_info = json.loads(base64.b64decode(raw).decode())
+    scopes = ["https://www.googleapis.com/auth/calendar"]
+    creds = Credentials.from_service_account_info(service_account_info, scopes=scopes)
+    return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
-def cargar_negocio() -> dict:
-    path = KNOWLEDGE_DIR / "business.yaml"
-    if not path.exists():
-        raise FileNotFoundError("No existe knowledge/business.yaml")
-    with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+def _dias_habiles(desde, cantidad):
+    dias = []
+    cursor = desde.replace(hour=0, minute=0, second=0, microsecond=0)
+    while len(dias) < cantidad:
+        cursor += timedelta(days=1)
+        if cursor.weekday() < 5:
+            dias.append(cursor)
+    return dias
 
-def cargar_servicios() -> str:
+def _slots_del_dia(dia, hora_inicio: time = None, hora_fin: time = None):
+    hora_inicio = hora_inicio or HORA_INICIO
+    hora_fin = hora_fin or HORA_FIN
+    slots = []
+    cursor = TIMEZONE.localize(datetime.combine(dia.date(), hora_inicio))
+    fin_dia = TIMEZONE.localize(datetime.combine(dia.date(), hora_fin))
+    delta = timedelta(minutes=DURACION_SLOT_MIN)
+    while cursor + delta <= fin_dia:
+        slots.append(cursor)
+        cursor += delta
+    return slots
+
+def _periodos_ocupados(service, calendar_id, dias):
+    if not dias:
+        return []
+    time_min = TIMEZONE.localize(
+        datetime.combine(dias[0].date(), time(0, 0))
+    ).isoformat()
+    time_max = TIMEZONE.localize(
+        datetime.combine(dias[-1].date(), time(23, 59))
+    ).isoformat()
+    body = {
+        "timeMin": time_min,
+        "timeMax": time_max,
+        "items": [{"id": calendar_id}],
+    }
+    result = service.freebusy().query(body=body).execute()
+    busy_raw = result.get("calendars", {}).get(calendar_id, {}).get("busy", [])
+    ocupados = []
+    for bloque in busy_raw:
+        inicio = datetime.fromisoformat(bloque["start"].replace("Z", "+00:00"))
+        fin = datetime.fromisoformat(bloque["end"].replace("Z", "+00:00"))
+        ocupados.append((inicio, fin))
+    return ocupados
+
+def _slot_libre(slot, ocupados):
+    slot_utc = slot.astimezone(pytz.utc)
+    fin_slot = slot_utc + timedelta(minutes=DURACION_SLOT_MIN)
+    for inicio, fin in ocupados:
+        if slot_utc < fin and fin_slot > inicio:
+            return False
+    return True
+
+def horario_permitido(fecha: date, hora: time) -> bool:
     """
-    Carga knowledge/servicios.md y saca las secciones enteras de servicios
-    que estén bloqueados (ver memory.obtener_servicios_bloqueados). El
-    archivo separa cada servicio con una línea "---", así que si una
-    sección menciona una palabra clave bloqueada se descarta completa
-    (título + descripción) — Claude no se queda con la información para
-    poder ofrecerlo, en vez de depender de que "recuerde" no mencionarlo.
+    True si ese día/hora está dentro de la ventana de atención — considerando
+    cierres puntuales o rangos horarios especiales cargados por el admin.
+    Se usa como última validación antes de crear un evento en Calendar.
     """
-    path = KNOWLEDGE_DIR / "servicios.md"
-    if not path.exists():
-        return ""
-    texto = path.read_text(encoding="utf-8")
+    override = memory.obtener_horario_override(fecha)
+    if override:
+        if override.get("cerrado"):
+            return False
+        desde = (
+            datetime.strptime(override["desde"], "%H:%M").time()
+            if override.get("desde") else HORA_INICIO
+        )
+        hasta = (
+            datetime.strptime(override["hasta"], "%H:%M").time()
+            if override.get("hasta") else HORA_FIN
+        )
+        return desde <= hora <= hasta
+    return HORA_INICIO <= hora <= HORA_FIN
 
-    bloqueados = memory.obtener_servicios_bloqueados()
-    if not bloqueados:
-        return texto
+def obtener_slots_disponibles(dias=5):
+    calendar_id = os.environ.get("GOOGLE_CALENDAR_ID", "")
+    if not calendar_id or not os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", ""):
+        return (
+            "El sistema de calendario no está configurado. "
+            "Cuando el cliente quiera agendar, decile que Braian lo va a contactar."
+        )
+    try:
+        service = _get_service()
+        ahora = datetime.now(TIMEZONE)
+        margen = ahora + timedelta(minutes=MARGEN_MIN)
+        proximos_dias = _dias_habiles(ahora, dias)
+        ocupados = _periodos_ocupados(service, calendar_id, proximos_dias)
+        slots_por_dia = {}
+        traducciones = {
+            "Monday": "Lunes", "Tuesday": "Martes", "Wednesday": "Miercoles",
+            "Thursday": "Jueves", "Friday": "Viernes",
+        }
+        for dia in proximos_dias:
+            override = memory.obtener_horario_override(dia.date())
+            if override and override.get("cerrado"):
+                continue  # día cerrado por horario especial — no se generan slots
 
-    secciones = texto.split("\n---\n")
-    secciones_filtradas = [
-        s for s in secciones
-        if not any(kw in s.lower() for kw in bloqueados)
-    ]
-    return "\n---\n".join(secciones_filtradas)
+            hora_inicio_dia = HORA_INICIO
+            hora_fin_dia = HORA_FIN
+            if override:
+                if override.get("desde"):
+                    hora_inicio_dia = datetime.strptime(override["desde"], "%H:%M").time()
+                if override.get("hasta"):
+                    hora_fin_dia = datetime.strptime(override["hasta"], "%H:%M").time()
 
-def cargar_perfil_cliente() -> str:
-    path = KNOWLEDGE_DIR / "perfil_cliente.md"
-    if path.exists():
-        return path.read_text(encoding="utf-8")
-    return ""
+            nombre_dia = dia.strftime("%A %d/%m").capitalize()
+            for en, es in traducciones.items():
+                nombre_dia = nombre_dia.replace(en, es)
+            for slot in _slots_del_dia(dia, hora_inicio_dia, hora_fin_dia):
+                if slot <= margen:
+                    continue
+                if _slot_libre(slot, ocupados):
+                    hora = slot.strftime("%H:%M")
+                    slots_por_dia.setdefault(nombre_dia, []).append(hora)
+        if not any(slots_por_dia.values()):
+            return "No hay slots disponibles. Braian se va a poner en contacto."
+        lineas = ["Horarios disponibles (Uruguay, GMT-3):"]
+        for dia, horas in slots_por_dia.items():
+            if horas:
+                lineas.append(f"- {dia}: {', '.join(horas)}")
+        return "\n".join(lineas)
+    except Exception as e:
+        print(f"[calendar] Error obteniendo disponibilidad: {e}")
+        return "No pude verificar disponibilidad. Braian lo va a contactar."
 
-def construir_system_prompt(slots_disponibles: str = "", notas_admin: list[dict] | None = None) -> str:
-    negocio = cargar_negocio()
-    servicios = cargar_servicios()
-    perfil_cliente = cargar_perfil_cliente()
-    notas_admin = notas_admin or []
-    servicios_bloqueados = memory.obtener_servicios_bloqueados()
-
-    if notas_admin:
-        hoy_str = datetime.now(pytz.timezone("America/Montevideo")).strftime("%d/%m")
-        lineas = []
-        for n in notas_admin:
-            fecha = n.get("fecha")
-            if fecha is None:
-                lineas.append(f"- (sin fecha, aplica siempre): {n['texto']}")
-            else:
-                lineas.append(f"- Para el {fecha.strftime('%d/%m')}: {n['texto']}")
-        bloque_notas = "\n".join(lineas)
-        seccion_avisos = f"""
----
-
-AVISOS DEL DUEÑO/ADMINISTRADOR (MÁXIMA PRIORIDAD — hoy es {hoy_str}):
-{bloque_notas}
-
-REGLAS PARA APLICAR ESTOS AVISOS:
-1. Los avisos SIN fecha aplican SIEMPRE, en toda conversación, hasta que se borren.
-2. Los avisos CON fecha: si el texto del aviso dice "hasta" (ej: "hasta el viernes", "no agendes hasta el jueves"), la restricción aplica desde HOY hasta esa fecha inclusive — no solo ese día puntual. Si el aviso NO dice "hasta" (ej: "no tiene llamada el jueves"), aplica SOLO en esa fecha específica. En ambos casos, si el cliente pregunta con anticipación, ya aplicá el aviso.
-3. Estos avisos PISAN COMPLETAMENTE las secciones DISPONIBILIDAD e INFORMACIÓN DEL NEGOCIO. Si contradicen algo de esas secciones, gana el aviso, sin excepción.
-4. Si un aviso prohíbe o restringe el agendamiento de llamadas (ej: "no agendes", "sin llamadas", "hasta el X"):
-   - NO ofrezcas horarios disponibles, aunque los veas en la sección DISPONIBILIDAD.
-   - NO invites al cliente a agendar ni menciones que hay slots libres.
-   - Si el cliente pide agendar o pregunta cuándo puede llamar, decile simplemente: "Por el momento no estamos tomando llamadas nuevas, te aviso cuando tengamos disponibilidad 😊" (o similar, sin inventar fechas).
-5. Si un aviso prohíbe ofrecer un servicio, no lo menciones aunque el cliente lo pida directamente.
-
-"""
-    else:
-        seccion_avisos = ""
-
-    if servicios_bloqueados:
-        lista_bloqueados = ", ".join(servicios_bloqueados)
-        seccion_servicios_bloqueados = f"""
----
-
-SERVICIOS QUE NO SE OFRECEN ACTUALMENTE: {lista_bloqueados}.
-Si el cliente pregunta por alguno de estos (aunque lo pida directamente),
-respondé con naturalidad que por ahora no lo estás ofreciendo — sin dar
-explicaciones técnicas ni mencionar que es una restricción del sistema — y
-redirigí la conversación hacia lo que sí ofrecés.
-
-"""
-    else:
-        seccion_servicios_bloqueados = ""
-
-    texto_disponibilidad = slots_disponibles or (
-        "⛔ Sin disponibilidad activa. NO hay horarios para ofrecer — ni esta semana, "
-        "ni la próxima, ni ningún día puntual. NO inventes ni repitas fechas que hayas "
-        "mostrado antes en la conversación. Si el cliente pide agendar o pregunta por "
-        "un día específico (hoy, mañana, cualquier fecha), respondé SOLO con algo como: "
-        '"Por el momento no estamos tomando llamadas nuevas, te aviso apenas tengamos '
-        'disponibilidad 😊" — sin mencionar ningún día ni semana concreta.'
-    )
-
-    prompt = f"""Tu nombre es Nexo. Sos el asistente de WhatsApp de {negocio.get('nombre_negocio', 'El Núcleo Digital')}.
-Presentate siempre como "Nexo", nunca como "Sos Nexo" ni ninguna otra variante.
-
-Tu objetivo: {negocio.get('objetivo', '')}
-
-Tono: {negocio.get('tono', '')}
-
-Horario de atención: {negocio.get('horario_atencion', 'Lunes a viernes, 11:00-18:00 Uruguay')}
-{seccion_avisos}{seccion_servicios_bloqueados}
----
-
-REGLAS IMPORTANTES:
-- Nunca inventes información que no esté en este contexto.
-- NUNCA ofrezcas ni menciones una fecha u horario de llamada que no esté literalmente escrito en la sección DISPONIBILIDAD PARA LLAMADAS de ESTE MISMO mensaje (el de más abajo). Aunque en mensajes anteriores de esta conversación hayas mostrado otras fechas, esas pueden haber cambiado o ya no ser válidas — no las repitas de memoria. Si la sección DISPONIBILIDAD dice que no hay horarios, no propongas ninguna fecha alternativa (ni "la próxima semana", ni ningún día puntual): solo decí que no hay disponibilidad por ahora.
-- No des precios nunca por WhatsApp— siempre se discuten en la llamada de descubrimiento.
-- Mensajes lo más cortos posible sin dejar de explicar lo necesario: priorizá claridad y brevedad por sobre completitud, 2-4 líneas máximo. Si hay mucha información, resumila y priorizá lo esencial — preferí SIEMPRE un solo mensaje bien compacto antes que dividir en varios. Solo dividí en 2 mensajes si es estrictamente necesario (por ejemplo, un bloque largo de horarios).
-- Tono humano y profesional, nunca acartonado ni de vendedor insistente.
-- Si no sabés algo, decilo y ofrecé que Braian (el fundador) lo aclare en la llamada.
-- No uses markdown (asteriscos, guiones, headers) en tus respuestas — es WhatsApp, no una presentación.
-- Podés usar emojis con moderación para que se lea más natural.
-- Cerrá tus respuestas con una pregunta o gancho ESPECÍFICO a lo que se acaba de hablar en ESE mensaje puntual — nunca uno genérico ni repetido igual en cada mensaje (evitá muletillas sueltas tipo "¿te sirve?" sin relación con el contenido). Tiene que sonar a que escuchaste al cliente, no a que completaste una fórmula.
-- EXCEPCIÓN al punto anterior: si en este mensaje ya confirmaste que una llamada quedó agendada (bloque [AGENDAR_LLAMADA]), NO cierres con una pregunta — ese tema quedó resuelto. Cerrá con una frase cálida simple, sin gancho (ej: "Nos vemos el jueves 👋" o "Cualquier cosa antes de la llamada, escribime").
-- Si en el historial de esta conversación ya se confirmó una llamada agendada, no la vuelvas a ofrecer ni preguntes por día/horario de nuevo — a menos que el cliente pida explícitamente cambiar o cancelar la llamada ya agendada.
-
----
-
-PERFIL DE CLIENTE IDEAL (evaluar antes de ofrecer la llamada de descubrimiento):
-{perfil_cliente}
-
----
-
-FLUJO ESPERADO DE CONVERSACIÓN:
-1. El cliente escribe → escuchás qué necesita / de qué negocio es.
-2. Contás brevemente qué hace Nucleo Digital y cómo podría aplicarse a su caso.
-3. Evaluá el PERFIL DE CLIENTE IDEAL de arriba con lo que el cliente ya contó. Si claramente no califica, agradecé el interés y cerrá la conversación con amabilidad, SIN ofrecer la llamada ni seguir insistiendo con el proceso de venta. Si hay duda razonable o falta información, seguí normal.
-4. Si califica y muestra interés real, ofrecés agendar una llamada de descubrimiento gratuita de 30 minutos con Braian.
-   IMPORTANTE: antes de ofrecer la llamada, verificá también los AVISOS DEL DUEÑO. Si hay alguno que restrinja el agendamiento, NO ofrezcas la llamada — seguí la conversación sin mencionar disponibilidad.
-5. Cuando el cliente acepta: preguntás su nombre (si no lo diste ya) y pedís que elija un horario de los disponibles.
-6. Una vez confirmado nombre + fecha + hora → usás el bloque de acción (ver abajo).
-
----
-
-AGENDAR LLAMADAS:
-Cuando el cliente quiera agendar, mostrá los horarios disponibles de la sección DISPONIBILIDAD más abajo.
-IMPORTANTE: verificá primero los AVISOS DEL DUEÑO. Si hay alguno que restrinja el agendamiento, NO mostrés horarios ni invités a agendar, aunque la sección DISPONIBILIDAD tenga slots libres.
-Pedí solo: nombre completo (o como quiere que lo llames) y el horario que le queda mejor.
-No pidas email ni otros datos — con nombre y horario alcanza.
-
-Cuando tengas nombre + fecha + hora confirmados por el cliente, agregá al final de tu respuesta
-(después de tu mensaje normal, en líneas nuevas) este bloque EXACTO:
-
-[AGENDAR_LLAMADA]
-Nombre: <nombre del cliente>
-Fecha: <DD/MM/YYYY>
-Hora: <HH:MM>
-Tema: <una línea con lo que quiere tratar, según la conversación>
-[/AGENDAR_LLAMADA]
-
-Ese bloque lo procesa el sistema — el cliente no lo ve. No lo menciones.
-Usalo UNA SOLA VEZ, cuando fecha y hora estén confirmadas por el cliente.
-Después del bloque, confirmale al cliente que quedó agendado y que Braian lo va a llamar a esa hora.
-No agregues una pregunta de gancho en este mensaje — el tema queda cerrado (ver EXCEPCIÓN en REGLAS IMPORTANTES).
-
-PEDIDOS DEL CATÁLOGO DE WHATSAPP:
-Si un mensaje del cliente empieza con "[PEDIDO DEL CATÁLOGO]", significa que
-el cliente agregó uno o más productos/servicios al carrito desde el catálogo
-de WhatsApp Business (no escribió eso él mismo, es un aviso del sistema).
-Respondé confirmando qué producto(s) recibiste, mostrando interés genuino en
-entender su negocio, y seguí el FLUJO ESPERADO DE CONVERSACIÓN de arriba
-(explicar brevemente, evaluar el perfil, y si califica y muestra interés,
-ofrecer la llamada de descubrimiento). Nunca menciones "[PEDIDO DEL
-CATÁLOGO]" ni la palabra "webhook" en tu respuesta — hablale como si el
-cliente te hubiera mandado el pedido directamente.
-
----
-
-INFORMACIÓN DE NUCLEO DIGITAL:
-{servicios}
-
----
-
-DISPONIBILIDAD PARA LLAMADAS:
-{texto_disponibilidad}
-
-"""
-    return prompt
-
-# Variables de entorno
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-YCLOUD_API_KEY    = os.environ.get("YCLOUD_API_KEY")
-YCLOUD_PHONE_NUMBER  = os.environ.get("YCLOUD_PHONE_NUMBER")
-OWNER_WHATSAPP_NUMBER = os.environ.get("OWNER_WHATSAPP_NUMBER")  # número de Braian
-GOOGLE_CALENDAR_ID = os.environ.get("GOOGLE_CALENDAR_ID")
+def crear_evento(fecha_str, hora_str, nombre_cliente, numero_cliente, tema=""):
+    calendar_id = os.environ.get("GOOGLE_CALENDAR_ID", "")
+    if not calendar_id or not os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", ""):
+        print("[calendar] No configurado.")
+        return False
+    try:
+        service = _get_service()
+        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+            try:
+                fecha = datetime.strptime(fecha_str, fmt).date()
+                break
+            except ValueError:
+                continue
+        else:
+            raise ValueError(f"Formato de fecha no reconocido: {fecha_str}")
+        hoy = datetime.now(TIMEZONE).date()
+        if fecha < hoy:
+            fecha = fecha.replace(year=hoy.year)
+        if fecha < hoy:
+            fecha = fecha.replace(year=hoy.year + 1)
+        hora = datetime.strptime(hora_str, "%H:%M").time()
+        inicio = TIMEZONE.localize(datetime.combine(fecha, hora))
+        fin = inicio + timedelta(minutes=DURACION_SLOT_MIN)
+        descripcion = f"Cliente WhatsApp: {numero_cliente}"
+        if tema:
+            descripcion += f"\nTema: {tema}"
+        descripcion += "\n\nAgendado automaticamente por el bot de Nucleo Digital."
+        evento = {
+            "summary": f"Llamada Nucleo - {nombre_cliente}",
+            "description": descripcion,
+            "start": {"dateTime": inicio.isoformat(), "timeZone": "America/Montevideo"},
+            "end": {"dateTime": fin.isoformat(), "timeZone": "America/Montevideo"},
+            "reminders": {
+                "useDefault": False,
+                "overrides": [
+                    {"method": "popup", "minutes": 30},
+                    {"method": "email", "minutes": 60},
+                ],
+            },
+        }
+        service.events().insert(calendarId=calendar_id, body=evento).execute()
+        print(f"[calendar] Evento creado: {inicio.strftime('%d/%m/%Y %H:%M')} - {nombre_cliente}")
+        return True
+    except Exception as e:
+        print(f"[calendar] Error creando evento: {e}")
+        return False
