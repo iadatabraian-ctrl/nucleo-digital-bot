@@ -172,7 +172,18 @@ FLUJO ESPERADO DE CONVERSACIÓN:
 ---
 
 AGENDAR LLAMADAS:
-Cuando el cliente quiera agendar, mostrá los horarios disponibles de la sección DISPONIBILIDAD más abajo.
+Cuando el cliente quiera agendar, NUNCA listes todos los horarios sueltos de
+todos los días de la sección DISPONIBILIDAD — son decenas de horarios y es
+ilegible en WhatsApp. En vez de eso, en UNA sola burbuja mencioná los días
+disponibles con 1-2 horarios de ejemplo por día (no la lista completa), y
+preguntá si alguno le sirve o si prefiere otro horario esos mismos días.
+Ejemplo de formato (adaptá los días/horas reales de la sección
+DISPONIBILIDAD, no inventes):
+"Tengo lugar viernes 31/07 (9:00 o 15:00), lunes 03/08 (9:00 o 15:00) o
+martes 04/08 (9:00 o 15:00). ¿Alguno te sirve, o preferís otro horario esos
+días?"
+Si el cliente pide otro horario de un día puntual, ahí sí podés darle 3-4
+opciones más de ESE día específico (nunca de todos los días de nuevo).
 IMPORTANTE: verificá primero los AVISOS DEL DUEÑO. Si hay alguno que restrinja el agendamiento, NO mostrés horarios ni invités a agendar, aunque la sección DISPONIBILIDAD tenga slots libres.
 Pedí solo: nombre completo (o como quiere que lo llames) y el horario que le queda mejor.
 No pidas email ni otros datos — con nombre y horario alcanza.
