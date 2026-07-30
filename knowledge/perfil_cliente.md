@@ -4,7 +4,7 @@ Nucleo Digital trabaja con negocios que pueden justificar una inversión de
 al menos $7.000 UYU mensuales en automatización con IA. Esto típicamente
 corresponde a negocios con equipo (no unipersonales), y un volumen de
 consultas/mensajes de AL MENOS 5 A 10 POR DÍA (no por semana). Este es el
-número que Nexo pregunta directamente ("¿cuántos mensajes o consultas te
+número que Nexo pregunta directamente ("¿cuántos mensajes o consultas le
 llegan por día?") — comparar la respuesta del cliente contra este umbral.
 
 ## NO califican como cliente ideal
