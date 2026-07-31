@@ -13,7 +13,7 @@ from flask_limiter.util import get_remote_address
 from agent import config
 from agent.providers import proveedor_activo
 from agent.providers.ycloud import verificar_firma
-from agent.brain import responder
+from agent.brain import responder, verificar_anthropic_cacheado
 from agent import memory
 
 app = Flask(__name__)
@@ -21,7 +21,7 @@ app = Flask(__name__)
 limiter = Limiter(
     key_func=get_remote_address,
     app=app,
-    default_limits=["200 per day", "60 per hour"],
+    default_limits=["5000 per day", "1000 per hour"],
     storage_uri="memory://",
 )
 
@@ -97,7 +97,7 @@ def verificar_webhook():
     return "ok", 200
 
 @app.route("/webhook", methods=["POST"])
-@limiter.limit("30 per minute")
+@limiter.limit("300 per minute")
 def recibir_mensaje():
     payload_bytes = request.get_data()
 
@@ -298,8 +298,34 @@ def recibir_mensaje():
     return "ok", 200
 
 @app.route("/", methods=["GET"])
+@limiter.limit("60 per minute")
 def health():
-    return "Nucleo Digital Bot — corriendo ✅", 200
+    try:
+        variables_requeridas = [
+            "ANTHROPIC_API_KEY",
+            "YCLOUD_API_KEY",
+            "UPSTASH_REDIS_URL",
+            "OWNER_WHATSAPP_NUMBER",
+        ]
+        checks = {}
+        for var in variables_requeridas:
+            checks[f"env_{var}"] = "ok" if os.environ.get(var) else "error"
+
+        try:
+            memory.ping()
+            checks["redis"] = "ok"
+        except Exception as e:
+            print(f"[health] Redis no responde: {e}")
+            checks["redis"] = "error"
+
+        checks["anthropic"] = verificar_anthropic_cacheado()
+
+        todo_ok = all(v == "ok" for v in checks.values())
+        return {"status": "ok" if todo_ok else "degraded", "checks": checks}, 200 if todo_ok else 503
+
+    except Exception as e:
+        print(f"[health] Fallo inesperado en el health check: {e}")
+        return {"status": "error"}, 503
 
 if __name__ == "__main__":
     app.run(port=5000)

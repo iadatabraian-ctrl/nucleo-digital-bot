@@ -7,11 +7,15 @@ services:
     envVars:
       - key: ANTHROPIC_API_KEY
         sync: false
-      - key: META_ACCESS_TOKEN
+      - key: YCLOUD_API_KEY
         sync: false
-      - key: META_PHONE_NUMBER_ID
+      - key: YCLOUD_WEBHOOK_SECRET
         sync: false
-      - key: META_VERIFY_TOKEN
+      - key: YCLOUD_PHONE_NUMBER
+        sync: false
+      - key: UPSTASH_REDIS_URL
+        sync: false
+      - key: UPSTASH_REDIS_TOKEN
         sync: false
       - key: OWNER_WHATSAPP_NUMBER
         sync: false

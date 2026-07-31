@@ -23,6 +23,42 @@ from agent import calendar as gcal
 
 _client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
+# ── Health check ──────────────────────────────────────────────────────────
+_ANTHROPIC_HEALTH_CACHE_KEY = "health:anthropic"
+_ANTHROPIC_HEALTH_TTL_SEG = 1800  # 30 min — no gastar en cada ping de un monitor externo
+
+def verificar_anthropic() -> str:
+    """Llamada mínima real a la API para confirmar auth + crédito disponible. Sin cache."""
+    try:
+        _client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=1,
+            messages=[{"role": "user", "content": "ping"}],
+        )
+        return "ok"
+    except Exception as e:
+        print(f"[health] Anthropic no responde: {e}")
+        return "error"
+
+def verificar_anthropic_cacheado() -> str:
+    """Como verificar_anthropic(), pero reusa el resultado desde Redis por 30 min."""
+    try:
+        cacheado = memory.cache_get(_ANTHROPIC_HEALTH_CACHE_KEY)
+        if cacheado:
+            return cacheado
+    except Exception as e:
+        print(f"[health] No se pudo leer cache de salud en Redis: {e}")
+
+    estado = verificar_anthropic()
+
+    try:
+        memory.cache_set(_ANTHROPIC_HEALTH_CACHE_KEY, estado, _ANTHROPIC_HEALTH_TTL_SEG)
+    except Exception as e:
+        print(f"[health] No se pudo guardar cache de salud en Redis: {e}")
+
+    return estado
+# ─────────────────────────────────────────────────────────────────────────
+
 _AGENDAR_RE = re.compile(
     r"\[AGENDAR_LLAMADA\](.*?)\[/AGENDAR_LLAMADA\]", re.DOTALL
 )

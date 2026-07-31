@@ -42,6 +42,18 @@ def obtener_historial(numero: str) -> list:
 def limpiar_historial(numero: str):
     _redis.delete(f"hist:{numero}")
 
+# ── Utilidades genéricas de Redis (health check, cache corto, etc.) ─────────
+
+def ping() -> bool:
+    """True si Redis responde. Propaga la excepción si falla la conexión."""
+    return _redis.ping()
+
+def cache_get(clave: str) -> str | None:
+    return _redis.get(clave)
+
+def cache_set(clave: str, valor: str, ttl_seg: int):
+    _redis.set(clave, valor, ex=ttl_seg)
+
 # ── Pausas por conversación ──────────────────────────────────────────────────
 # Se usa el TTL nativo de Redis: una pausa "temporal" se guarda con expiración
 # automática (Redis la borra solo, no hace falta chequear fechas a mano).
