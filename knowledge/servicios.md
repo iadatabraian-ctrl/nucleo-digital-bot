@@ -2,8 +2,8 @@
 
 ## ¿Qué hace Nucleo Digital?
 
-Ayudamos a concesionarias, inmobiliarias y negocios locales con alto volumen
-de mensajes a automatizar la atención por WhatsApp: responder consultas,
+Ayudamos a empresas pequeñas, medianas y grandes con alto volumen de
+mensajes a automatizar la atención por WhatsApp: responder consultas,
 calificar clientes y agendar turnos, sin perder ventas por no contestar a
 tiempo. No hace falta saber de tecnología — nosotros nos ocupamos de todo.
 
@@ -13,7 +13,7 @@ tiempo. No hace falta saber de tecnología — nosotros nos ocupamos de todo.
 
 ### 🤖 Bots de WhatsApp con IA
 Automatizamos la atención por WhatsApp: el bot responde consultas, toma pedidos,
-agenda citas y califica leads 24/7 sin que tengas que estar pegado al celular.
+agenda citas y califica leads 24/7 sin que tenga que estar pegado al celular.
 Ideal para negocios que reciben muchos mensajes y pierden ventas por no responder
 a tiempo.
 
@@ -28,21 +28,21 @@ a tiempo.
 ---
 
 ### ⚙️ Automatizaciones de procesos
-Conectamos tus herramientas (Gmail, WhatsApp, Google Sheets, CRM, facturación,
-lo que uses) para que información fluya sola sin que tengas que copiarla
+Conectamos sus herramientas (Gmail, WhatsApp, Google Sheets, CRM, facturación,
+lo que use) para que la información fluya sola sin que tenga que copiarla
 manualmente de un lado a otro.
 
 **Ejemplos:**
-- Cuando llega un lead al formulario web → entra solo a tu CRM + te llega una
+- Cuando llega un lead al formulario web → entra solo a su CRM + le llega una
   notificación por WhatsApp
-- Cuando confirmás un pedido → se genera la factura y se le manda el tracking al cliente
+- Cuando confirma un pedido → se genera la factura y se le manda el tracking al cliente
 - Cuando alguien agenda una reunión → le llega el recordatorio automático
 
 ---
 
 ### 🧠 Agentes de IA personalizados
 Sistemas que hacen tareas complejas sin intervención humana: clasificar emails,
-generar reportes, responder consultas técnicas con el contexto de tu negocio,
+generar reportes, responder consultas técnicas con el contexto de su negocio,
 analizar documentos, etc.
 
 ---
@@ -69,9 +69,9 @@ negocio y arma una propuesta a medida. Sin compromiso.
 
 ## ¿Para quién es esto?
 
+- Empresas pequeñas, medianas y grandes que reciben muchos mensajes y no dan abasto
 - Concesionarias que reciben consultas de autos fuera de horario y las pierden
 - Inmobiliarias que necesitan calificar rápido si un cliente puede comprar/alquilar
-- Negocios locales en general que reciben muchos mensajes y no dan abasto
 - Cualquiera que quiera entender cómo la IA puede aplicarse a su negocio específico
 
 ---
@@ -79,5 +79,5 @@ negocio y arma una propuesta a medida. Sin compromiso.
 ## ¿Cómo empezar?
 
 El primer paso siempre es una llamada de 15 minutos (gratis) para entender
-tu situación y ver si tenemos solución para lo que necesitás. Si aplica,
-te mandamos una propuesta. Si no aplica, te lo decimos igual — no perdés nada.
+su situación y ver si tenemos solución para lo que necesita. Si aplica,
+le mandamos una propuesta. Si no aplica, se lo decimos igual — no pierde nada.
