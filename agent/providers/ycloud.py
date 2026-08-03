@@ -54,12 +54,13 @@ _CATALOGO_SEMILLA: dict[str, str] = {
 
 # ── Validación HMAC ──────────────────────────────────────────────────────────
 
-def verificar_firma(payload_bytes: bytes, firma_header: str) -> bool:
+def verificar_firma(payload_bytes: bytes, firma_header: str, secret: str | None = None) -> bool:
     """
     Verifica que el webhook realmente proviene de YCloud.
     YCloud envía el HMAC-SHA256 del cuerpo en el header 'YCloud-Signature'.
+    El secreto puede pasarse como argumento o se lee de config.YCLOUD_WEBHOOK_SECRET.
     """
-    secreto = config.YCLOUD_WEBHOOK_SECRET
+    secreto = secret or config.YCLOUD_WEBHOOK_SECRET
     if not secreto:
         # Sin secreto configurado, aceptar todo (solo para desarrollo)
         return True
