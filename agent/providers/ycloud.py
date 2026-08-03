@@ -1,249 +1,310 @@
 """
 agent/providers/ycloud.py
 --------------------------
-Implementación contra YCloud API (WhatsApp Coexistence).
-Incluye transcripción de audios via Groq Whisper, deduplicación de mensajes
-y validación de firma HMAC del webhook.
+Adaptador para la API de YCloud (WhatsApp BSP).
+
+Responsabilidades:
+  - Validar la firma HMAC de los webhooks entrantes
+  - Parsear mensajes entrantes (texto, audio, pedidos de catálogo)
+  - Detectar ecos del modo Coexistencia (mensajes enviados por el dueño)
+  - Deduplicar WAMIDs para evitar procesar el mismo mensaje dos veces
+  - Transcribir audios con Groq Whisper
+  - Enviar mensajes de texto vía YCloud
+
+Variables de entorno:
+  YCLOUD_API_KEY         — clave de API de YCloud
+  YCLOUD_WEBHOOK_SECRET  — secreto para verificar firma HMAC
+  GROQ_API_KEY           — clave de Groq (para transcripción de audio)
 """
-import os
-import io
-import hmac
 import hashlib
+import hmac
+import os
+import tempfile
+from typing import Any
+
 import requests
-from .base import ProveedorWhatsApp
-from .. import memory
 
-YCLOUD_API_BASE = "https://api.ycloud.com/v2"
+from agent import config
 
-# Deduplicación: wamids ya procesados (se limpia al reiniciar)
-_wamids_procesados: set[str] = set()
+_BASE_URL = "https://api.ycloud.com/v2"
 
-# ── Catálogo de productos: semilla inicial ──────────────────────────────────
-# Solo se usa si Redis todavía no tiene nada guardado para ese ID. Una vez
-# que el mapeo real vive en Redis (vía /producto desde WhatsApp), esta
-# semilla deja de importar — el catálogo se administra 100% por WhatsApp.
+# ── Deduplicación de WAMIDs ──────────────────────────────────────────────────
+_wamids_vistos: set[str] = set()
+_MAX_WAMIDS = 1000
+
+
+def _marcar_wamid(wamid: str) -> bool:
+    """Retorna True si el WAMID es nuevo (no procesado antes)."""
+    global _wamids_vistos
+    if wamid in _wamids_vistos:
+        return False
+    _wamids_vistos.add(wamid)
+    if len(_wamids_vistos) > _MAX_WAMIDS:
+        _wamids_vistos = set(list(_wamids_vistos)[-_MAX_WAMIDS // 2:])
+    return True
+
+
+# ── Semilla del catálogo ─────────────────────────────────────────────────────
 _CATALOGO_SEMILLA: dict[str, str] = {
-    "an7zf2hqy6": "Automatizaciones de procesos",
-    "tmtbpywd8b": "Agentes de IA personalizados",
-    "5oj1894qyt": "Bots de WhatsApp con IA",
+    "product_001": "Sitio Web Básico",
+    "product_002": "Sitio Web Premium",
+    "product_003": "Gestión de Redes Sociales",
 }
 
 
-def _resolver_nombre_producto(pid: str) -> str | None:
-    catalogo_dinamico = memory.obtener_catalogo()
-    if pid in catalogo_dinamico:
-        return catalogo_dinamico[pid]
-    return _CATALOGO_SEMILLA.get(pid)
+# ── Validación HMAC ──────────────────────────────────────────────────────────
 
-
-def _texto_desde_order(order: dict) -> tuple[str, list[str]]:
+def verificar_firma(payload_bytes: bytes, firma_header: str) -> bool:
     """
-    Convierte el bloque 'order' del webhook (carrito del catálogo) en un
-    texto natural, para que entre al mismo flujo que un mensaje de texto
-    normal y Claude lo conteste con el system prompt de siempre.
-    Devuelve (texto_para_claude, ids_sin_identificar).
+    Verifica que el webhook realmente proviene de YCloud.
+    YCloud envía el HMAC-SHA256 del cuerpo en el header 'YCloud-Signature'.
     """
-    items = order.get("product_items", [])
-    nombres = []
-    ids_desconocidos: list[str] = []
-
-    for item in items:
-        pid = item.get("product_retailer_id", "")
-        nombre = _resolver_nombre_producto(pid)
-        cantidad = item.get("quantity", 1)
-
-        if nombre is None:
-            ids_desconocidos.append(pid)
-            nombre = f"producto no identificado ({pid})"
-
-        if cantidad and cantidad > 1:
-            nombres.append(f"{nombre} (x{cantidad})")
-        else:
-            nombres.append(nombre)
-
-    if not nombres:
-        texto = "El cliente envió un pedido del catálogo, pero no se pudo leer el contenido."
-    elif len(nombres) == 1:
-        texto = f"[PEDIDO DEL CATÁLOGO] El cliente agregó al carrito: {nombres[0]}."
-    else:
-        texto = "[PEDIDO DEL CATÁLOGO] El cliente agregó al carrito: " + ", ".join(nombres) + "."
-
-    return texto, ids_desconocidos
+    secreto = config.YCLOUD_WEBHOOK_SECRET
+    if not secreto:
+        # Sin secreto configurado, aceptar todo (solo para desarrollo)
+        return True
+    esperada = hmac.new(
+        secreto.encode(), payload_bytes, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(esperada, firma_header.lower().replace("sha256=", ""))
 
 
-def verificar_firma(payload_bytes: bytes, firma_header: str, secret: str) -> bool:
+# ── Transcripción de audio ───────────────────────────────────────────────────
+
+def _transcribir_audio(media_id: str) -> str | None:
     """
-    Valida el header 'YCloud-Signature: t={timestamp},s={signature}'.
-    Formato real documentado por YCloud: HMAC-SHA256("{timestamp}.{body}", secret).
+    Descarga el audio de YCloud y lo transcribe con Groq Whisper.
+    Retorna el texto o None si falla.
     """
-    if not firma_header or not secret:
-        return False
-
-    try:
-        partes = dict(p.split("=", 1) for p in firma_header.split(","))
-        timestamp = partes.get("t", "")
-        signature = partes.get("s", "")
-    except Exception:
-        return False
-
-    if not timestamp or not signature:
-        return False
-
-    signed_payload = f"{timestamp}.".encode() + payload_bytes
-    esperada = hmac.new(secret.encode(), signed_payload, hashlib.sha256).hexdigest()
-
-    return hmac.compare_digest(esperada, signature)
-
-
-def _transcribir_audio(url: str, mime_type: str = "audio/ogg") -> str:
-    groq_api_key = os.environ.get("GROQ_API_KEY", "")
-    if not groq_api_key:
-        print("[audio] GROQ_API_KEY no configurada")
+    groq_key = config.GROQ_API_KEY
+    if not groq_key:
+        print("[ycloud] GROQ_API_KEY no configurada, no se transcribe audio")
         return None
 
     try:
-        headers_ycloud = {"X-API-Key": os.environ.get("YCLOUD_API_KEY", "")}
-        resp = requests.get(url, headers=headers_ycloud, timeout=30)
-        if resp.status_code != 200:
-            print(f"[audio] Error descargando: {resp.status_code}")
-            return None
-
-        audio_bytes = resp.content
-
-        ext_map = {
-            "audio/ogg": "ogg",
-            "audio/ogg; codecs=opus": "ogg",
-            "audio/mpeg": "mp3",
-            "audio/mp4": "mp4",
-            "audio/wav": "wav",
-            "audio/webm": "webm",
-        }
-        ext = ext_map.get(mime_type.lower().split(";")[0].strip(), "ogg")
-
-        groq_resp = requests.post(
-            "https://api.groq.com/openai/v1/audio/transcriptions",
-            headers={"Authorization": f"Bearer {groq_api_key}"},
-            files={"file": (f"audio.{ext}", io.BytesIO(audio_bytes), mime_type)},
-            data={"model": "whisper-large-v3-turbo", "language": "es"},
-            timeout=30,
+        # 1. Obtener URL de descarga del archivo
+        headers = {"X-API-Key": config.YCLOUD_API_KEY}
+        media_resp = requests.get(
+            f"{_BASE_URL}/whatsapp/media/{media_id}",
+            headers=headers,
+            timeout=15,
         )
+        media_resp.raise_for_status()
+        media_data = media_resp.json()
+        url_descarga = media_data.get("url")
+        mime_type    = media_data.get("mimeType", "audio/ogg")
 
-        if groq_resp.status_code == 200:
-            texto = groq_resp.json().get("text", "").strip()
-            print(f"[audio] Transcripto: {texto[:80]}")
-            return texto if texto else None
-        else:
-            print(f"[audio] Error Groq: {groq_resp.status_code} — {groq_resp.text}")
+        if not url_descarga:
+            print(f"[ycloud] No se obtuvo URL de descarga para media {media_id}")
             return None
+
+        # 2. Descargar el archivo de audio
+        audio_resp = requests.get(url_descarga, timeout=30)
+        audio_resp.raise_for_status()
+
+        extension = "ogg"
+        if "mpeg" in mime_type or "mp3" in mime_type:
+            extension = "mp3"
+        elif "mp4" in mime_type or "m4a" in mime_type:
+            extension = "m4a"
+        elif "wav" in mime_type:
+            extension = "wav"
+
+        # 3. Transcribir con Groq Whisper
+        with tempfile.NamedTemporaryFile(suffix=f".{extension}", delete=False) as tmp:
+            tmp.write(audio_resp.content)
+            tmp_path = tmp.name
+
+        with open(tmp_path, "rb") as audio_file:
+            groq_resp = requests.post(
+                "https://api.groq.com/openai/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {groq_key}"},
+                files={"file": (f"audio.{extension}", audio_file, mime_type)},
+                data={"model": "whisper-large-v3", "language": "es"},
+                timeout=60,
+            )
+        os.unlink(tmp_path)
+        groq_resp.raise_for_status()
+        texto = groq_resp.json().get("text", "").strip()
+        print(f"[ycloud] Audio transcrito: {texto[:100]}")
+        return texto if texto else None
 
     except Exception as e:
-        print(f"[audio] Excepción: {e}")
+        print(f"[ycloud] Error transcribiendo audio: {e}")
         return None
 
 
-class YCloudProvider(ProveedorWhatsApp):
+# ── Detección de ecos de Coexistencia ────────────────────────────────────────
 
-    def __init__(self):
-        self.api_key = os.environ.get("YCLOUD_API_KEY", "")
-        self.from_number = os.environ.get("YCLOUD_PHONE_NUMBER", "")
+def parsear_eco_manual(payload: dict) -> str | None:
+    """
+    En modo Coexistencia, YCloud re-envía al webhook los mensajes que el
+    dueño envía directamente desde su teléfono (ecos). Estos tienen
+    direction='outbound' o type='message_echo'.
 
-    def parsear_eco_manual(self, payload: dict) -> str | None:
-        """
-        Si el dueño le contestó a un cliente a mano desde la app de WhatsApp
-        Business (Coexistence), YCloud manda un evento 'echo'. Devuelve el
-        número del CLIENTE al que le escribió el dueño, o None si no aplica.
-        """
-        if payload.get("type") != "whatsapp.smb.message.echoes":
-            return None
-        msg = payload.get("whatsappMessage", {})
-        numero_cliente = msg.get("to", "")
-        return numero_cliente or None
+    Retorna el número del cliente al que el dueño le escribió, o None
+    si no es un eco.
+    """
+    tipo = payload.get("type", "")
+    if tipo == "message_echo":
+        to = payload.get("to", "")
+        return to if to else None
 
-    def parsear_mensaje_entrante(self, payload: dict) -> dict | None:
-        try:
-            if payload.get("type") != "whatsapp.inbound_message.received":
-                return None
+    # También puede venir como evento de mensaje normal con direction outbound
+    for posible in [payload, payload.get("data", {})]:
+        if isinstance(posible, dict):
+            if posible.get("direction") == "outbound":
+                to = posible.get("to", "") or posible.get("toNumber", "")
+                return to if to else None
 
-            msg = payload.get("whatsappInboundMessage", {})
-            wamid = msg.get("wamid", "")
+    return None
 
-            # Deduplicación: ignorar mensajes ya procesados
-            if wamid and wamid in _wamids_procesados:
-                print(f"[dedup] Mensaje duplicado ignorado: {wamid[:30]}")
-                return None
-            if wamid:
-                _wamids_procesados.add(wamid)
-                # Evitar que el set crezca infinito
-                if len(_wamids_procesados) > 1000:
-                    _wamids_procesados.clear()
 
-            tipo = msg.get("type", "")
-            numero = msg.get("from", "")
-            nombre = msg.get("customerProfile", {}).get("name", "")
+# ── Parser principal de mensaje entrante ────────────────────────────────────
 
-            if tipo == "text":
-                texto = msg.get("text", {}).get("body", "")
-
-            elif tipo == "audio":
-                audio_obj = msg.get("audio", {})
-                url = audio_obj.get("link", "")
-                mime_type = audio_obj.get("mime_type", "audio/ogg")
-
-                if url:
-                    texto = _transcribir_audio(url, mime_type)
-                    if not texto:
-                        texto = "__AUDIO_NO_TRANSCRIPTO__"
-                else:
-                    texto = "__AUDIO_NO_TRANSCRIPTO__"
-
-            elif tipo == "order":
-                order = msg.get("order", {})
-                texto, ids_desconocidos = _texto_desde_order(order)
-
-                if ids_desconocidos:
-                    lineas_comando = "\n".join(
-                        f"/producto {pid} <nombre del producto>" for pid in ids_desconocidos
-                    )
-                    aviso_admin = (
-                        "⚠️ Nexo recibió un pedido con producto(s) del catálogo "
-                        "que todavía no tienen nombre asignado:\n\n"
-                        + lineas_comando
-                        + "\n\nCopiá el comando, reemplazá <nombre del producto> y mandámelo "
-                        "para que lo reconozca la próxima vez."
-                    )
-                    if not texto or not numero:
-                        return None
-                    return {
-                        "numero": numero,
-                        "texto": texto,
-                        "nombre": nombre,
-                        "aviso_admin": aviso_admin,
-                    }
-
-            else:
-                return None
-
-            if not texto or not numero:
-                return None
-
-            return {"numero": numero, "texto": texto, "nombre": nombre}
-
-        except (KeyError, TypeError) as e:
-            print(f"[parsear_mensaje] Error: {e}")
-            return None
-
-    def enviar_mensaje(self, numero: str, texto: str) -> None:
-        url = f"{YCLOUD_API_BASE}/whatsapp/messages"
-        headers = {
-            "X-API-Key": self.api_key,
-            "Content-Type": "application/json",
+def parsear_mensaje_entrante(payload: dict) -> dict | None:
+    """
+    Parsea un webhook de YCloud y retorna un dict con:
+      {
+        'numero': str,        # E.164 del remitente
+        'wamid':  str,        # ID único del mensaje
+        'tipo':   str,        # 'texto' | 'audio' | 'catalogo' | 'desconocido'
+        'texto':  str,        # contenido (transcrito si era audio)
+        'es_eco': bool,       # True si es un eco de mensaje del dueño
+      }
+    Retorna None si el payload no corresponde a un mensaje entrante.
+    """
+    # Detectar eco del dueño
+    numero_eco = parsear_eco_manual(payload)
+    if numero_eco:
+        return {
+            "numero": numero_eco,
+            "wamid": payload.get("id", ""),
+            "tipo": "eco",
+            "texto": "",
+            "es_eco": True,
         }
-        data = {
-            "from": self.from_number,
-            "to": numero,
-            "type": "text",
-            "text": {"body": texto},
+
+    # Mensaje entrante normal
+    tipo_evento = payload.get("type", "")
+
+    # YCloud puede envolver en data.object o directamente
+    mensaje = None
+    if "from" in payload or "fromNumber" in payload:
+        mensaje = payload
+    elif "data" in payload and isinstance(payload["data"], dict):
+        datos = payload["data"]
+        if "from" in datos or "fromNumber" in datos:
+            mensaje = datos
+
+    if mensaje is None:
+        return None
+
+    numero = mensaje.get("from") or mensaje.get("fromNumber", "")
+    wamid  = mensaje.get("id", "")
+    tipo   = mensaje.get("type", "unknown")
+
+    if not numero:
+        return None
+
+    # Deduplicar
+    if wamid and not _marcar_wamid(wamid):
+        print(f"[ycloud] WAMID duplicado ignorado: {wamid}")
+        return None
+
+    # Texto plano
+    if tipo == "text":
+        body = mensaje.get("text", {})
+        if isinstance(body, dict):
+            cuerpo = body.get("body", "")
+        else:
+            cuerpo = str(body)
+        return {
+            "numero": numero,
+            "wamid": wamid,
+            "tipo": "texto",
+            "texto": cuerpo.strip(),
+            "es_eco": False,
         }
-        resp = requests.post(url, headers=headers, json=data, timeout=15)
-        if resp.status_code >= 300:
-            print(f"[ERROR enviando] {resp.status_code}: {resp.text}")
+
+    # Audio (voz)
+    if tipo == "audio":
+        audio = mensaje.get("audio", {})
+        media_id = audio.get("id", "")
+        texto_transcrito = _transcribir_audio(media_id) if media_id else None
+        if not texto_transcrito:
+            texto_transcrito = "[Audio no transcrito]"
+        return {
+            "numero": numero,
+            "wamid": wamid,
+            "tipo": "audio",
+            "texto": texto_transcrito,
+            "es_eco": False,
+        }
+
+    # Pedido de catálogo (order)
+    if tipo == "order":
+        from agent import memory as mem
+        catalogo_redis = mem.obtener_catalogo()
+        catalogo = {**_CATALOGO_SEMILLA, **catalogo_redis}
+
+        orden = mensaje.get("order", {})
+        items = orden.get("product_items", [])
+        lineas = []
+        for item in items:
+            pid      = item.get("product_retailer_id", "")
+            cantidad = item.get("quantity", 1)
+            nombre   = catalogo.get(pid, pid)
+            lineas.append(f"{cantidad}x {nombre}")
+
+        resumen = "Pedido del catálogo: " + ", ".join(lineas) if lineas else "Pedido de catálogo"
+        return {
+            "numero": numero,
+            "wamid": wamid,
+            "tipo": "catalogo",
+            "texto": resumen,
+            "es_eco": False,
+        }
+
+    # Tipo no manejado
+    print(f"[ycloud] Tipo de mensaje no manejado: {tipo}")
+    return {
+        "numero": numero,
+        "wamid": wamid,
+        "tipo": "desconocido",
+        "texto": f"[Mensaje de tipo '{tipo}' no soportado]",
+        "es_eco": False,
+    }
+
+
+# ── Envío de mensajes ────────────────────────────────────────────────────────
+
+def enviar_mensaje(numero: str, texto: str) -> bool:
+    """
+    Envía un mensaje de texto a través de YCloud.
+    Retorna True si se envió correctamente.
+    """
+    if not config.YCLOUD_API_KEY:
+        print("[ycloud] YCLOUD_API_KEY no configurada")
+        return False
+
+    try:
+        resp = requests.post(
+            f"{_BASE_URL}/whatsapp/messages",
+            headers={
+                "X-API-Key": config.YCLOUD_API_KEY,
+                "Content-Type": "application/json",
+            },
+            json={
+                "to": numero,
+                "type": "text",
+                "text": {"body": texto},
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        print(f"[ycloud] Mensaje enviado a {numero}: {texto[:80]}")
+        return True
+    except Exception as e:
+        print(f"[ycloud] Error enviando mensaje a {numero}: {e}")
+        return False
