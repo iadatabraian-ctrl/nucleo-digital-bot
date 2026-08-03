@@ -308,3 +308,25 @@ def enviar_mensaje(numero: str, texto: str) -> bool:
     except Exception as e:
         print(f"[ycloud] Error enviando mensaje a {numero}: {e}")
         return False
+
+
+# ── Clase de compatibilidad (requerida por agent/providers/__init__.py) ──────
+
+class YCloudProvider:
+    """
+    Wrapper de clase sobre las funciones del módulo.
+    Permite que __init__.py haga: proveedor_activo = YCloudProvider()
+    sin cambiar nada más.
+    """
+
+    def verificar_firma(self, payload_bytes: bytes, firma_header: str) -> bool:
+        return verificar_firma(payload_bytes, firma_header)
+
+    def parsear_eco_manual(self, payload: dict) -> str | None:
+        return parsear_eco_manual(payload)
+
+    def parsear_mensaje_entrante(self, payload: dict) -> dict | None:
+        return parsear_mensaje_entrante(payload)
+
+    def enviar_mensaje(self, numero: str, texto: str) -> bool:
+        return enviar_mensaje(numero, texto)
