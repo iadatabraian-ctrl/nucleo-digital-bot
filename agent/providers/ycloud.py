@@ -281,6 +281,8 @@ def enviar_mensaje(numero: str, texto: str) -> bool:
         print("[ycloud] YCLOUD_API_KEY no configurada")
         return False
 
+    from_number = config.YCLOUD_PHONE_NUMBER
+
     try:
         resp = requests.post(
             f"{_BASE_URL}/whatsapp/messages",
@@ -289,6 +291,7 @@ def enviar_mensaje(numero: str, texto: str) -> bool:
                 "Content-Type": "application/json",
             },
             json={
+                "from": from_number,
                 "to": numero,
                 "type": "text",
                 "text": {"body": texto},
@@ -323,4 +326,3 @@ class YCloudProvider:
 
     def enviar_mensaje(self, numero: str, texto: str) -> bool:
         return enviar_mensaje(numero, texto)
-      
