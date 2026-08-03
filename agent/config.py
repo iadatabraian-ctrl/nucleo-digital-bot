@@ -1,109 +1,116 @@
 """
 agent/config.py
 ----------------
-Carga knowledge/business.yaml + knowledge/servicios.md y construye el
-system prompt para Claude. También expone las variables de entorno.
-
-Para cambiar el comportamiento del bot sin tocar código:
-  → Editá knowledge/business.yaml (tono, objetivo, etc.)
-  → Editá knowledge/servicios.md  (servicios, precios, casos de uso)
+Configuración global y construcción del system prompt.
+Carga archivos de conocimiento, filtra servicios bloqueados y arma el
+prompt completo que recibe Claude en cada llamada.
 """
 import os
-import yaml
+import re
 from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
 
-KNOWLEDGE_DIR = Path(__file__).parent.parent / "knowledge"
+# ── Claves de entorno ────────────────────────────────────────────────────────
+ANTHROPIC_API_KEY      = os.environ.get("ANTHROPIC_API_KEY", "")
+YCLOUD_API_KEY         = os.environ.get("YCLOUD_API_KEY", "")
+YCLOUD_WEBHOOK_SECRET  = os.environ.get("YCLOUD_WEBHOOK_SECRET", "")
+OWNER_WHATSAPP_NUMBER  = os.environ.get("OWNER_WHATSAPP_NUMBER", "")
+GOOGLE_CALENDAR_ID     = os.environ.get("GOOGLE_CALENDAR_ID", "")
+GROQ_API_KEY           = os.environ.get("GROQ_API_KEY", "")
 
+# ── Rutas de archivos de conocimiento ───────────────────────────────────────
+_BASE = Path(__file__).parent.parent / "knowledge"
 
-def cargar_negocio() -> dict:
-    path = KNOWLEDGE_DIR / "business.yaml"
-    if not path.exists():
-        raise FileNotFoundError("No existe knowledge/business.yaml")
-    with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
-def cargar_servicios() -> str:
-    path = KNOWLEDGE_DIR / "servicios.md"
-    if path.exists():
-        return path.read_text(encoding="utf-8")
+def _leer(nombre: str) -> str:
+    ruta = _BASE / nombre
+    if ruta.exists():
+        return ruta.read_text(encoding="utf-8").strip()
     return ""
 
+# ── Helpers de filtrado ──────────────────────────────────────────────────────
 
-def construir_system_prompt(slots_disponibles: str = "") -> str:
-    negocio = cargar_negocio()
-    servicios = cargar_servicios()
+def _filtrar_servicios_bloqueados(texto_servicios: str, bloqueados: list[str]) -> str:
+    """
+    Elimina del texto de servicios.md las secciones que contengan
+    alguna de las palabras clave bloqueadas.
+    Trabaja sección por sección (separadas por líneas en blanco o '##').
+    """
+    if not bloqueados or not texto_servicios:
+        return texto_servicios
 
-    prompt = f"""Sos Nexo, el asistente de WhatsApp de {negocio.get('nombre_negocio', 'Nucleo Digital')}.
+    # Dividir en secciones por encabezados ## o líneas vacías consecutivas
+    secciones = re.split(r"(?=##\s)", texto_servicios)
+    resultado = []
+    for seccion in secciones:
+        bloqueada = any(k in seccion.lower() for k in bloqueados)
+        if not bloqueada:
+            resultado.append(seccion)
+    return "\n".join(resultado).strip()
 
-Tu objetivo: {negocio.get('objetivo', '')}
 
-Tono: {negocio.get('tono', '')}
+# ── Constructor de system prompt ─────────────────────────────────────────────
 
-Horario de atención: {negocio.get('horario_atencion', 'Lunes a viernes, 9:00-18:00 Uruguay')}
+def construir_system_prompt(
+    slots_disponibles: str = "",
+    notas_admin: list[dict] | None = None,
+) -> str:
+    """
+    Arma el system prompt completo que se le pasa a Claude.
 
----
+    Args:
+        slots_disponibles: Texto con los próximos slots de calendario disponibles.
+                           Si es "", Claude sabe que no hay disponibilidad.
+        notas_admin:        Lista de dicts {'texto': str, 'fecha': date|None}
+                           provenientes de memory.listar_notas_admin().
+    """
+    from agent import memory  # import tardío para evitar circular
 
-REGLAS IMPORTANTES:
-- Nunca inventes información que no esté en este contexto.
-- No des precios nunca por WhatsApp — siempre se discuten en la llamada de descubrimiento.
-- Sé breve y natural, como mensajes de WhatsApp reales. Nada de mails formales.
-- Si no sabés algo, decilo y ofrecé que Braian (el fundador) lo aclare en la llamada.
-- No uses markdown (asteriscos, guiones, headers) en tus respuestas — es WhatsApp, no una presentación.
-- Podés usar emojis con moderación para que se lea más natural.
-- No hagas preguntas de calificación innecesarias como cuántos mensajes reciben por día — solo preguntá eso si el cliente ya mencionó explícitamente que necesita un bot de WhatsApp.
+    perfil      = _leer("perfil_cliente.md")
+    servicios_raw = _leer("servicios.md")
+    instrucciones = _leer("instrucciones.md")
 
----
+    # Filtrar servicios bloqueados
+    bloqueados = memory.obtener_servicios_bloqueados()
+    servicios = _filtrar_servicios_bloqueados(servicios_raw, bloqueados)
 
-FLUJO ESPERADO DE CONVERSACIÓN:
-1. El cliente escribe → escuchás qué necesita y de qué negocio es. No preguntes volumen de mensajes ni datos técnicos — eso solo aplica si el cliente mencionó WhatsApp específicamente.
-2. Identificás cuál de los servicios de Nucleo Digital aplica mejor a su situación: bot de WhatsApp, automatización de procesos, agente de IA, presencia digital o marketing con IA. Si el cliente menciona una necesidad concreta, respondé a esa necesidad directamente.
-3. Contás brevemente cómo ese servicio podría aplicarse a su caso puntual.
-4. Si muestra interés real, ofrecés agendar una llamada de descubrimiento gratuita de 30 minutos con Braian.
-5. Cuando el cliente acepta: preguntás su nombre (si no lo tenés ya) y pedís que elija un horario de los disponibles.
-6. Una vez confirmado nombre + fecha + hora → usás el bloque de acción (ver abajo).
+    # Construir bloque de notas de admin
+    notas_bloque = ""
+    if notas_admin:
+        lineas = [n.get("texto", "") for n in notas_admin if n.get("texto")]
+        if lineas:
+            notas_bloque = (
+                "\n\n## Notas del administrador (para hoy)\n"
+                + "\n".join(f"- {l}" for l in lineas)
+            )
 
----
+    # Bloque de disponibilidad de agenda
+    if slots_disponibles:
+        agenda_bloque = (
+            "\n\n## Slots disponibles para llamadas\n"
+            + slots_disponibles
+            + "\n\nSi el cliente quiere agendar una llamada, usa EXACTAMENTE este formato:\n"
+            "[AGENDAR_LLAMADA]\n"
+            "Nombre: <nombre del cliente>\n"
+            "Fecha: <DD/MM/YYYY>\n"
+            "Hora: <HH:MM>\n"
+            "Tema: <tema breve>\n"
+            "[/AGENDAR_LLAMADA]\n"
+            "Coloca el bloque al final de tu mensaje. El texto visible para el cliente "
+            "va ANTES del bloque."
+        )
+    else:
+        agenda_bloque = (
+            "\n\n## Agenda\n"
+            "En este momento no hay turnos disponibles. "
+            "NO ofrezcas fechas ni horarios de ningún tipo. "
+            "Si el cliente pregunta, dile que te avisará cuando haya disponibilidad."
+        )
 
-AGENDAR LLAMADAS:
-Cuando el cliente quiera agendar, mostrá los horarios disponibles de la sección DISPONIBILIDAD más abajo.
-Pedí solo: nombre completo (o como quiere que lo llames) y el horario que le queda mejor.
-No pidas email ni otros datos — con nombre y horario alcanza.
+    partes = [p for p in [perfil, instrucciones, servicios] if p]
+    prompt = "\n\n---\n\n".join(partes)
+    prompt += notas_bloque
+    prompt += agenda_bloque
 
-Cuando tengas nombre + fecha + hora confirmados por el cliente, agregá al final de tu respuesta
-(después de tu mensaje normal, en líneas nuevas) este bloque EXACTO:
-
-[AGENDAR_LLAMADA]
-Nombre: <nombre del cliente>
-Fecha: <DD/MM/YYYY>
-Hora: <HH:MM>
-Tema: <una línea con lo que quiere tratar, según la conversación>
-[/AGENDAR_LLAMADA]
-
-Ese bloque lo procesa el sistema — el cliente no lo ve. No lo menciones.
-Usalo UNA SOLA VEZ, cuando fecha y hora estén confirmadas por el cliente.
-Después del bloque, confirmale al cliente que quedó agendado y que Braian lo va a llamar a esa hora.
-
----
-
-INFORMACIÓN DE NUCLEO DIGITAL:
-{servicios}
-
----
-
-DISPONIBILIDAD PARA LLAMADAS:
-{slots_disponibles if slots_disponibles else "Cargando disponibilidad..."}
-
-"""
     return prompt
-
-
-# Variables de entorno
-ANTHROPIC_API_KEY     = os.environ.get("ANTHROPIC_API_KEY")
-YCLOUD_API_KEY        = os.environ.get("YCLOUD_API_KEY")
-YCLOUD_PHONE_NUMBER   = os.environ.get("YCLOUD_PHONE_NUMBER")
-OWNER_WHATSAPP_NUMBER = os.environ.get("OWNER_WHATSAPP_NUMBER")  # número de Braian
-GOOGLE_CALENDAR_ID    = os.environ.get("GOOGLE_CALENDAR_ID")
