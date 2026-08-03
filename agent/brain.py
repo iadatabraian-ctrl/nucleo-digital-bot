@@ -3,8 +3,20 @@ agent/brain.py
 ----------------
 Llama a Claude con el system prompt (con slots de calendario inyectados)
 + historial de la conversacion. Detecta [AGENDAR_LLAMADA] y crea el evento.
+
+Redes de seguridad a nivel código (no dependen de que el LLM respete una
+instrucción de texto):
+1. Si hay aviso que prohíbe agendar del todo → se omiten los slots del
+   prompt. Claude no puede ofrecer lo que no ve.
+2. Si Claude igual menciona una fecha o arma un bloque [AGENDAR_LLAMADA] sin
+   que haya slots reales, se bloquea acá y se reemplaza por el mensaje
+   seguro — nunca se crea un evento fantasma.
+3. Si hay slots reales pero Claude propone una fecha/hora fuera de la
+   ventana permitida para ese día en particular (horario especial), también
+   se bloquea antes de tocar Calendar.
 """
 import re
+from datetime import datetime
 import anthropic
 from agent import config, memory
 from agent import calendar as gcal
@@ -15,10 +27,47 @@ _AGENDAR_RE = re.compile(
     r"\[AGENDAR_LLAMADA\](.*?)\[/AGENDAR_LLAMADA\]", re.DOTALL
 )
 
+_RE_RESTRICCION_AGENDA = re.compile(
+    r"(no\s+agendes?|no\s+atendés?\s+llamadas?|sin\s+llamadas?|no\s+hay\s+llamadas?|no\s+agenda)",
+    re.IGNORECASE,
+)
+
+_RE_FECHA_MENCION = re.compile(
+    r"(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|"
+    r"\d{1,2}\s*/\s*\d{1,2}|pr[oó]xima\s+semana|esta\s+semana)",
+    re.IGNORECASE,
+)
+
+_MENSAJE_SIN_DISPONIBILIDAD = (
+    "Por el momento no estamos tomando llamadas nuevas, te aviso apenas "
+    "tengamos disponibilidad 😊"
+)
+
+def _tiene_restriccion_agenda(notas: list[dict]) -> bool:
+    """True si alguna nota activa prohíbe o restringe TOTALMENTE el agendamiento."""
+    return any(_RE_RESTRICCION_AGENDA.search(n.get("texto", "")) for n in notas)
+
 
 def _parsear_campo(bloque: str, campo: str) -> str:
     match = re.search(rf"^{campo}:\s*(.+)$", bloque, re.MULTILINE | re.IGNORECASE)
     return match.group(1).strip() if match else ""
+
+
+def _parsear_fecha_hora(fecha_str: str, hora_str: str):
+    """Devuelve (date, time) o (None, None) si no se pudo parsear."""
+    fecha_obj = None
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            fecha_obj = datetime.strptime(fecha_str, fmt).date()
+            break
+        except (ValueError, TypeError):
+            continue
+    hora_obj = None
+    try:
+        hora_obj = datetime.strptime(hora_str, "%H:%M").time()
+    except (ValueError, TypeError):
+        pass
+    return fecha_obj, hora_obj
 
 
 def responder(numero: str, mensaje_usuario: str):
@@ -26,8 +75,17 @@ def responder(numero: str, mensaje_usuario: str):
     memory.agregar_mensaje(numero, "user", mensaje_usuario)
     historial = memory.obtener_historial(numero)
 
-    slots = gcal.obtener_slots_disponibles(dias=5)
-    system_prompt = config.construir_system_prompt(slots_disponibles=slots)
+    notas_admin = memory.listar_notas_admin()
+
+    if _tiene_restriccion_agenda(notas_admin):
+        slots = ""
+        print("[brain] Restricción total de agenda activa — slots omitidos del prompt")
+    else:
+        slots = gcal.obtener_slots_disponibles(dias=5)
+
+    system_prompt = config.construir_system_prompt(
+        slots_disponibles=slots, notas_admin=notas_admin
+    )
 
     respuesta = _client.messages.create(
         model="claude-haiku-4-5",
@@ -37,9 +95,34 @@ def responder(numero: str, mensaje_usuario: str):
     )
 
     texto_completo = respuesta.content[0].text
+    print(f"[brain] Respuesta Claude: {texto_completo[:500]}")
+    match = _AGENDAR_RE.search(texto_completo)
+    print(f"[brain] Bloque AGENDAR encontrado: {bool(match)}")
+
+    bloqueado_por_seguridad = False
+
+    if not slots and (match or _RE_FECHA_MENCION.search(texto_completo)):
+        print("[brain] Bloqueado: mencionaba fecha/agenda sin disponibilidad real")
+        bloqueado_por_seguridad = True
+
+    elif match:
+        bloque_tmp = match.group(1).strip()
+        fecha_tmp = _parsear_campo(bloque_tmp, "Fecha")
+        hora_tmp = _parsear_campo(bloque_tmp, "Hora")
+        fecha_obj, hora_obj = _parsear_fecha_hora(fecha_tmp, hora_tmp)
+        try:
+            if fecha_obj and hora_obj and not gcal.horario_permitido(fecha_obj, hora_obj):
+                print(f"[brain] Bloqueado: {fecha_tmp} {hora_tmp} fuera de la ventana permitida")
+                bloqueado_por_seguridad = True
+        except Exception as e:
+            print(f"[brain] No se pudo validar horario propuesto: {e}")
+
+    if bloqueado_por_seguridad:
+        texto_completo = _MENSAJE_SIN_DISPONIBILIDAD
+        match = None
+
     memory.agregar_mensaje(numero, "assistant", texto_completo)
 
-    match = _AGENDAR_RE.search(texto_completo)
     resumen_notif = None
 
     if match:
@@ -67,5 +150,7 @@ def responder(numero: str, mensaje_usuario: str):
             f"{estado}"
         )
 
-    texto_cliente = _AGENDAR_RE.sub("", texto_completo).strip()
-    return texto_cliente, resumen_notif
+        texto_cliente = _AGENDAR_RE.sub("", texto_completo).strip()
+        return texto_cliente, resumen_notif
+
+    return texto_completo, resumen_notif
