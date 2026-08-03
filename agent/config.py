@@ -15,6 +15,7 @@ load_dotenv()
 # ── Claves de entorno ────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY      = os.environ.get("ANTHROPIC_API_KEY", "")
 YCLOUD_API_KEY         = os.environ.get("YCLOUD_API_KEY", "")
+YCLOUD_PHONE_NUMBER    = os.environ.get("YCLOUD_PHONE_NUMBER", "")
 YCLOUD_WEBHOOK_SECRET  = os.environ.get("YCLOUD_WEBHOOK_SECRET", "")
 OWNER_WHATSAPP_NUMBER  = os.environ.get("OWNER_WHATSAPP_NUMBER", "")
 GOOGLE_CALENDAR_ID     = os.environ.get("GOOGLE_CALENDAR_ID", "")
