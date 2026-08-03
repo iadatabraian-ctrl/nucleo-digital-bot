@@ -140,23 +140,20 @@ def _transcribir_audio(media_id: str) -> str | None:
 def parsear_eco_manual(payload: dict) -> str | None:
     """
     En modo Coexistencia, YCloud re-envía al webhook los mensajes que el
-    dueño envía directamente desde su teléfono (ecos). Estos tienen
-    direction='outbound' o type='message_echo'.
+    dueño envía desde su teléfono. Estos vienen con type distinto a
+    'whatsapp.inbound_message.received' y tienen 'whatsappMessage' (no
+    'whatsappInboundMessage').
 
-    Retorna el número del cliente al que el dueño le escribió, o None
-    si no es un eco.
+    Retorna el número del cliente al que el dueño le escribió, o None.
     """
     tipo = payload.get("type", "")
-    if tipo == "message_echo":
-        to = payload.get("to", "")
-        return to if to else None
 
-    # También puede venir como evento de mensaje normal con direction outbound
-    for posible in [payload, payload.get("data", {})]:
-        if isinstance(posible, dict):
-            if posible.get("direction") == "outbound":
-                to = posible.get("to", "") or posible.get("toNumber", "")
-                return to if to else None
+    # Mensajes salientes del dueño en coexistencia
+    if tipo not in ("whatsapp.inbound_message.received", ""):
+        msg = payload.get("whatsappMessage", {})
+        if msg:
+            to = msg.get("to", "")
+            return to if to else None
 
     return None
 
@@ -165,15 +162,22 @@ def parsear_eco_manual(payload: dict) -> str | None:
 
 def parsear_mensaje_entrante(payload: dict) -> dict | None:
     """
-    Parsea un webhook de YCloud y retorna un dict con:
+    Parsea un webhook de YCloud v2 y retorna un dict con:
       {
-        'numero': str,        # E.164 del remitente
-        'wamid':  str,        # ID único del mensaje
-        'tipo':   str,        # 'texto' | 'audio' | 'catalogo' | 'desconocido'
-        'texto':  str,        # contenido (transcrito si era audio)
-        'es_eco': bool,       # True si es un eco de mensaje del dueño
+        'numero': str,    # E.164 del remitente
+        'wamid':  str,    # ID único del mensaje
+        'tipo':   str,    # 'texto' | 'audio' | 'catalogo' | 'desconocido'
+        'texto':  str,    # contenido (transcrito si era audio)
+        'es_eco': bool,   # True si es un eco de mensaje del dueño
       }
-    Retorna None si el payload no corresponde a un mensaje entrante.
+    Retorna None si no es un mensaje entrante procesable.
+
+    Formato YCloud v2:
+      payload.type == "whatsapp.inbound_message.received"
+      payload.whatsappInboundMessage.from  → número del cliente
+      payload.whatsappInboundMessage.wamid → ID del mensaje
+      payload.whatsappInboundMessage.type  → "text" | "audio" | "order"
+      payload.whatsappInboundMessage.text.body → texto
     """
     # Detectar eco del dueño
     numero_eco = parsear_eco_manual(payload)
@@ -186,24 +190,19 @@ def parsear_mensaje_entrante(payload: dict) -> dict | None:
             "es_eco": True,
         }
 
-    # Mensaje entrante normal
+    # Solo procesamos mensajes entrantes
     tipo_evento = payload.get("type", "")
-
-    # YCloud puede envolver en data.object o directamente
-    mensaje = None
-    if "from" in payload or "fromNumber" in payload:
-        mensaje = payload
-    elif "data" in payload and isinstance(payload["data"], dict):
-        datos = payload["data"]
-        if "from" in datos or "fromNumber" in datos:
-            mensaje = datos
-
-    if mensaje is None:
+    if tipo_evento != "whatsapp.inbound_message.received":
+        print(f"[ycloud] Evento ignorado: {tipo_evento}")
         return None
 
-    numero = mensaje.get("from") or mensaje.get("fromNumber", "")
-    wamid  = mensaje.get("id", "")
-    tipo   = mensaje.get("type", "unknown")
+    msg = payload.get("whatsappInboundMessage", {})
+    if not msg:
+        return None
+
+    numero = msg.get("from", "")
+    wamid  = msg.get("wamid", "") or msg.get("id", "")
+    tipo   = msg.get("type", "unknown")
 
     if not numero:
         return None
@@ -215,11 +214,7 @@ def parsear_mensaje_entrante(payload: dict) -> dict | None:
 
     # Texto plano
     if tipo == "text":
-        body = mensaje.get("text", {})
-        if isinstance(body, dict):
-            cuerpo = body.get("body", "")
-        else:
-            cuerpo = str(body)
+        cuerpo = msg.get("text", {}).get("body", "")
         return {
             "numero": numero,
             "wamid": wamid,
@@ -230,7 +225,7 @@ def parsear_mensaje_entrante(payload: dict) -> dict | None:
 
     # Audio (voz)
     if tipo == "audio":
-        audio = mensaje.get("audio", {})
+        audio = msg.get("audio", {})
         media_id = audio.get("id", "")
         texto_transcrito = _transcribir_audio(media_id) if media_id else None
         if not texto_transcrito:
@@ -243,13 +238,12 @@ def parsear_mensaje_entrante(payload: dict) -> dict | None:
             "es_eco": False,
         }
 
-    # Pedido de catálogo (order)
+    # Pedido de catálogo
     if tipo == "order":
         from agent import memory as mem
         catalogo_redis = mem.obtener_catalogo()
         catalogo = {**_CATALOGO_SEMILLA, **catalogo_redis}
-
-        orden = mensaje.get("order", {})
+        orden = msg.get("order", {})
         items = orden.get("product_items", [])
         lineas = []
         for item in items:
@@ -257,7 +251,6 @@ def parsear_mensaje_entrante(payload: dict) -> dict | None:
             cantidad = item.get("quantity", 1)
             nombre   = catalogo.get(pid, pid)
             lineas.append(f"{cantidad}x {nombre}")
-
         resumen = "Pedido del catálogo: " + ", ".join(lineas) if lineas else "Pedido de catálogo"
         return {
             "numero": numero,
@@ -267,7 +260,6 @@ def parsear_mensaje_entrante(payload: dict) -> dict | None:
             "es_eco": False,
         }
 
-    # Tipo no manejado
     print(f"[ycloud] Tipo de mensaje no manejado: {tipo}")
     return {
         "numero": numero,
@@ -331,3 +323,4 @@ class YCloudProvider:
 
     def enviar_mensaje(self, numero: str, texto: str) -> bool:
         return enviar_mensaje(numero, texto)
+      
