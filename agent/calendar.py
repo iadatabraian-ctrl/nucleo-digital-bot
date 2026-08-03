@@ -35,9 +35,9 @@ _DIAS_HABILES        = {0, 1, 2, 3, 4}  # lunes=0 … viernes=4
 
 
 def _get_service():
-    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT", "")
+    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "") or os.environ.get("GOOGLE_SERVICE_ACCOUNT", "")
     if not raw:
-        raise RuntimeError("GOOGLE_SERVICE_ACCOUNT no configurada")
+        raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON no configurada")
     info = json.loads(raw)
     creds = service_account.Credentials.from_service_account_info(
         info, scopes=SCOPES
