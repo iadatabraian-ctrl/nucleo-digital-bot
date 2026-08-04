@@ -2,11 +2,12 @@
 agent/config.py
 ----------------
 Configuración global y construcción del system prompt.
-Carga archivos de conocimiento, filtra servicios bloqueados y arma el
-prompt completo que recibe Claude en cada llamada.
+Carga business.yaml (tono, objetivo, persona), servicios.md y
+perfil_cliente.md. Filtra servicios bloqueados antes de armar el prompt.
 """
 import os
 import re
+import yaml
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -30,26 +31,24 @@ def _leer(nombre: str) -> str:
         return ruta.read_text(encoding="utf-8").strip()
     return ""
 
+def _leer_yaml(nombre: str) -> dict:
+    ruta = _BASE / nombre
+    if ruta.exists():
+        with open(ruta, encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
 # ── Helpers de filtrado ──────────────────────────────────────────────────────
 
 def _filtrar_servicios_bloqueados(texto_servicios: str, bloqueados: list[str]) -> str:
-    """
-    Elimina del texto de servicios.md las secciones que contengan
-    alguna de las palabras clave bloqueadas.
-    Trabaja sección por sección (separadas por líneas en blanco o '##').
-    """
     if not bloqueados or not texto_servicios:
         return texto_servicios
-
-    # Dividir en secciones por encabezados ## o líneas vacías consecutivas
     secciones = re.split(r"(?=##\s)", texto_servicios)
     resultado = []
     for seccion in secciones:
-        bloqueada = any(k in seccion.lower() for k in bloqueados)
-        if not bloqueada:
+        if not any(k in seccion.lower() for k in bloqueados):
             resultado.append(seccion)
     return "\n".join(resultado).strip()
-
 
 # ── Constructor de system prompt ─────────────────────────────────────────────
 
@@ -57,61 +56,96 @@ def construir_system_prompt(
     slots_disponibles: str = "",
     notas_admin: list[dict] | None = None,
 ) -> str:
-    """
-    Arma el system prompt completo que se le pasa a Claude.
-
-    Args:
-        slots_disponibles: Texto con los próximos slots de calendario disponibles.
-                           Si es "", Claude sabe que no hay disponibilidad.
-        notas_admin:        Lista de dicts {'texto': str, 'fecha': date|None}
-                           provenientes de memory.listar_notas_admin().
-    """
     from agent import memory  # import tardío para evitar circular
 
-    perfil      = _leer("perfil_cliente.md")
+    negocio       = _leer_yaml("business.yaml")
     servicios_raw = _leer("servicios.md")
-    instrucciones = _leer("instrucciones.md")
+    perfil        = _leer("perfil_cliente.md")
 
-    # Filtrar servicios bloqueados
     bloqueados = memory.obtener_servicios_bloqueados()
-    servicios = _filtrar_servicios_bloqueados(servicios_raw, bloqueados)
+    servicios  = _filtrar_servicios_bloqueados(servicios_raw, bloqueados)
 
-    # Construir bloque de notas de admin
-    notas_bloque = ""
+    nombre   = negocio.get("nombre_negocio", "Nucleo Digital")
+    agente   = negocio.get("nombre_agente", "Nexo")
+    objetivo = negocio.get("objetivo", "")
+    tono     = negocio.get("tono", "")
+    horario  = negocio.get("horario_atencion", "Lunes a viernes, 9:00–18:00 (Uruguay)")
+    precios  = negocio.get("politica_precios", "")
+    fundador = negocio.get("fundador", "Braian")
+
+    prompt = f"""Sos {agente}, el asistente de WhatsApp de {nombre}.
+
+Tu objetivo: {objetivo}
+
+Tono: {tono}
+
+Horario de atención: {horario}
+
+---
+
+REGLAS IMPORTANTES:
+- Nunca inventes información que no esté en este contexto.
+- Política de precios: {precios}
+- Sé breve y natural — mensajes cortos como en WhatsApp real. Nada de textos largos ni listas interminables.
+- No uses markdown (asteriscos, guiones, headers) en tus respuestas — es WhatsApp, no un documento.
+- Podés usar emojis con moderación para que se lea más natural.
+- Si no sabés algo, decilo honestamente y ofrecé que {fundador} lo aclare en la llamada.
+
+---
+
+FLUJO DE CONVERSACIÓN:
+1. Escuchás qué necesita el cliente y de qué negocio es.
+2. Contás brevemente cómo {nombre} puede ayudar en su caso concreto.
+3. Cuando muestre interés real, ofrecés agendar una llamada de descubrimiento gratuita de 30 min con {fundador}.
+4. Cuando acepta: pedís su nombre y que elija un horario de los disponibles.
+5. Con nombre + fecha + hora confirmados → usás el bloque [AGENDAR_LLAMADA].
+
+---
+
+CALIFICACIÓN DE LEADS:
+{perfil}
+
+---
+
+SERVICIOS:
+{servicios}
+"""
+
+    # Notas del admin
     if notas_admin:
         lineas = [n.get("texto", "") for n in notas_admin if n.get("texto")]
         if lineas:
-            notas_bloque = (
-                "\n\n## Notas del administrador (para hoy)\n"
-                + "\n".join(f"- {l}" for l in lineas)
-            )
+            prompt += "\n\n---\n\nNOTAS DEL ADMINISTRADOR (válidas para hoy):\n"
+            prompt += "\n".join(f"- {l}" for l in lineas)
 
-    # Bloque de disponibilidad de agenda
+    # Disponibilidad de agenda
     if slots_disponibles:
-        agenda_bloque = (
-            "\n\n## Slots disponibles para llamadas\n"
-            + slots_disponibles
-            + "\n\nSi el cliente quiere agendar una llamada, usa EXACTAMENTE este formato:\n"
-            "[AGENDAR_LLAMADA]\n"
-            "Nombre: <nombre del cliente>\n"
-            "Fecha: <DD/MM/YYYY>\n"
-            "Hora: <HH:MM>\n"
-            "Tema: <tema breve>\n"
-            "[/AGENDAR_LLAMADA]\n"
-            "Coloca el bloque al final de tu mensaje. El texto visible para el cliente "
-            "va ANTES del bloque."
-        )
-    else:
-        agenda_bloque = (
-            "\n\n## Agenda\n"
-            "En este momento no hay turnos disponibles. "
-            "NO ofrezcas fechas ni horarios de ningún tipo. "
-            "Si el cliente pregunta, dile que te avisará cuando haya disponibilidad."
-        )
+        prompt += f"""
 
-    partes = [p for p in [perfil, instrucciones, servicios] if p]
-    prompt = "\n\n---\n\n".join(partes)
-    prompt += notas_bloque
-    prompt += agenda_bloque
+---
+
+DISPONIBILIDAD PARA LLAMADAS:
+{slots_disponibles}
+
+Cuando tengas nombre + fecha + hora confirmados, agregá al FINAL de tu mensaje este bloque exacto:
+
+[AGENDAR_LLAMADA]
+Nombre: <nombre del cliente>
+Fecha: <DD/MM/YYYY>
+Hora: <HH:MM>
+Tema: <una línea con el tema según la conversación>
+[/AGENDAR_LLAMADA]
+
+El bloque lo procesa el sistema — el cliente no lo ve. Usalo UNA SOLA VEZ cuando todo esté confirmado.
+"""
+    else:
+        prompt += """
+
+---
+
+AGENDA:
+En este momento no hay turnos disponibles. NO ofrezcas fechas ni horarios.
+Si el cliente pregunta, decile que le avisás cuando haya disponibilidad.
+"""
 
     return prompt
