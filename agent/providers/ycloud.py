@@ -141,17 +141,23 @@ def parsear_eco_manual(payload: dict) -> str | None:
     """
     En modo Coexistencia, YCloud re-envía al webhook los mensajes que el
     dueño envía desde su teléfono. Estos vienen con type distinto a
-    'whatsapp.inbound_message.received' y tienen 'whatsappMessage' (no
-    'whatsappInboundMessage').
+    'whatsapp.inbound_message.received' y tienen 'whatsappMessage' sin
+    campo 'status'.
+
+    Los webhooks de confirmación de entrega (status: sent/read/delivered)
+    también usan 'whatsappMessage' pero NO son mensajes del dueño — se ignoran.
 
     Retorna el número del cliente al que el dueño le escribió, o None.
     """
     tipo = payload.get("type", "")
 
-    # Mensajes salientes del dueño en coexistencia
     if tipo not in ("whatsapp.inbound_message.received", ""):
         msg = payload.get("whatsappMessage", {})
         if msg:
+            # Ignorar receipts de entrega — son confirmaciones del bot, no mensajes del dueño
+            status = msg.get("status", "")
+            if status in ("sent", "read", "delivered", "failed"):
+                return None
             to = msg.get("to", "")
             return to if to else None
 
