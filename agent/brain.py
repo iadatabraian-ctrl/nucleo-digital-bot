@@ -3,6 +3,7 @@ agent/brain.py
 ----------------
 Llama a Claude con el system prompt (con slots de calendario inyectados)
 + historial de la conversacion. Detecta [AGENDAR_LLAMADA] y crea el evento.
+Detecta [SOLICITA_HUMANO] y pausa la conversación avisando al dueño.
 
 Redes de seguridad a nivel código (no dependen de que el LLM respete una
 instrucción de texto):
@@ -14,6 +15,9 @@ instrucción de texto):
 3. Si hay slots reales pero Claude propone una fecha/hora fuera de la
    ventana permitida para ese día en particular (horario especial), también
    se bloquea antes de tocar Calendar.
+4. Si Claude detecta un pedido de hablar con un humano, se pausa la
+   conversación en código (no depende de que Claude "recuerde" no seguir
+   respondiendo) y se notifica al dueño con el motivo.
 """
 import re
 from datetime import datetime
@@ -25,6 +29,10 @@ _client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
 _AGENDAR_RE = re.compile(
     r"\[AGENDAR_LLAMADA\](.*?)\[/AGENDAR_LLAMADA\]", re.DOTALL
+)
+
+_SOLICITA_HUMANO_RE = re.compile(
+    r"\[SOLICITA_HUMANO\](.*?)\[/SOLICITA_HUMANO\]", re.DOTALL
 )
 
 _RE_RESTRICCION_AGENDA = re.compile(
@@ -96,8 +104,10 @@ def responder(numero: str, mensaje_usuario: str):
 
     texto_completo = respuesta.content[0].text
     print(f"[brain] Respuesta Claude: {texto_completo[:500]}")
+
+    match_humano = _SOLICITA_HUMANO_RE.search(texto_completo)
     match = _AGENDAR_RE.search(texto_completo)
-    print(f"[brain] Bloque AGENDAR encontrado: {bool(match)}")
+    print(f"[brain] Bloque AGENDAR encontrado: {bool(match)} | Bloque SOLICITA_HUMANO encontrado: {bool(match_humano)}")
 
     bloqueado_por_seguridad = False
 
@@ -120,6 +130,32 @@ def responder(numero: str, mensaje_usuario: str):
     if bloqueado_por_seguridad:
         texto_completo = _MENSAJE_SIN_DISPONIBILIDAD
         match = None
+        match_humano = None
+
+    # ── Pedido de hablar con un humano: pausa la conversación en código ────
+    # No depende de que Claude "recuerde" no seguir respondiendo — se
+    # bloquea acá mismo, en el mismo mensaje donde se detecta.
+    if match_humano:
+        bloque_h = match_humano.group(1).strip()
+        motivo = _parsear_campo(bloque_h, "Motivo") or "No especificado"
+
+        texto_cliente = _SOLICITA_HUMANO_RE.sub("", texto_completo).strip()
+        memory.agregar_mensaje(numero, "assistant", texto_cliente)
+
+        try:
+            memory.pausar_conversacion_indefinida(numero)
+            print(f"[brain] Conversación pausada indefinidamente por pedido de humano: {numero}")
+        except Exception as e:
+            print(f"[brain] No se pudo pausar la conversación tras pedido de humano: {e}")
+
+        resumen_notif = (
+            f"Cliente pidió hablar con una persona\n"
+            f"WhatsApp: {numero}\n"
+            f"Motivo: {motivo}\n"
+            f"Bot pausado para esta conversación — escribí /bot para reactivarlo cuando termines."
+        )
+        return texto_cliente, resumen_notif
+    # ─────────────────────────────────────────────────────────────────────
 
     memory.agregar_mensaje(numero, "assistant", texto_completo)
 
