@@ -20,7 +20,7 @@ from upstash_redis import Redis
 TIMEZONE = pytz.timezone("America/Montevideo")
 
 VENTANA = 20
-PAUSA_HORAS_DEFAULT = 0.5  # 30 minutos
+PAUSA_HORAS_DEFAULT = 2.0  # 2 horas
 
 _redis = Redis(
     url=os.environ.get("UPSTASH_REDIS_URL", ""),
