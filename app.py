@@ -43,7 +43,6 @@ def _procesar_buffer(numero: str):
         return
 
     texto_combinado = "\n".join(buffer["mensajes"])
-    print(f"[DEBUG texto_a_claude] {texto_combinado!r}")
 
     try:
         respuesta, resumen_notif = responder(numero, texto_combinado)
@@ -108,8 +107,6 @@ def recibir_mensaje():
         payload = json.loads(payload_bytes) if payload_bytes else {}
     except Exception:
         payload = {}
-
-    print(f"[DEBUG payload] {json.dumps(payload, ensure_ascii=False)}")
 
     numero_pausado = proveedor_activo.parsear_eco_manual(payload)
     if numero_pausado:
