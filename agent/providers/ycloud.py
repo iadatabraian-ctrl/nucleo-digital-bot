@@ -140,28 +140,24 @@ def _transcribir_audio(media_id: str) -> str | None:
 def parsear_eco_manual(payload: dict) -> str | None:
     """
     En modo Coexistencia, YCloud re-envía al webhook los mensajes que el
-    dueño envía desde su teléfono. Estos vienen con type distinto a
-    'whatsapp.inbound_message.received' y tienen 'whatsappMessage' sin
-    campo 'status'.
+    dueño envía desde su teléfono (WhatsApp Business app) con el evento
+    'whatsapp.smb.message.echoes'.
 
-    Los webhooks de confirmación de entrega (status: sent/read/delivered)
-    también usan 'whatsappMessage' pero NO son mensajes del dueño — se ignoran.
+    IMPORTANTE: este evento SÍ trae 'status': 'sent' en whatsappMessage —
+    el mismo status que usan los webhooks de confirmación de entrega de los
+    mensajes que manda el propio bot (evento 'whatsapp.message.updated').
+    Por eso NO se puede distinguir por 'status' (bug anterior: se ignoraban
+    los ecos reales pensando que eran solo confirmaciones de entrega).
+    La única forma confiable de distinguirlos es por el 'type' del evento.
 
     Retorna el número del cliente al que el dueño le escribió, o None.
     """
-    tipo = payload.get("type", "")
+    if payload.get("type", "") != "whatsapp.smb.message.echoes":
+        return None
 
-    if tipo not in ("whatsapp.inbound_message.received", ""):
-        msg = payload.get("whatsappMessage", {})
-        if msg:
-            # Ignorar receipts de entrega — son confirmaciones del bot, no mensajes del dueño
-            status = msg.get("status", "")
-            if status in ("sent", "read", "delivered", "failed"):
-                return None
-            to = msg.get("to", "")
-            return to if to else None
-
-    return None
+    msg = payload.get("whatsappMessage", {})
+    to = msg.get("to", "")
+    return to if to else None
 
 
 # ── Parser principal de mensaje entrante ────────────────────────────────────
