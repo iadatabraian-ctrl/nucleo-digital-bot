@@ -81,7 +81,8 @@ tono: >
 horario_atencion: "Lunes a viernes de 9:00 a 18:00 (Uruguay, GMT-3)"
 
 fundador: "Braian"
-numero_fundador_whatsapp: ""  # completar con el número de Braian (ej: 59898648853)
+# El número de WhatsApp del dueño se configura como OWNER_WHATSAPP_NUMBER
+# en las variables de entorno de Render — no acá.
 
 # Precios: NO se dan por WhatsApp. Siempre se discuten en la llamada.
 politica_precios: >
