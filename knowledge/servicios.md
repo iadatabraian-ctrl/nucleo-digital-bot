@@ -47,18 +47,6 @@ analizar documentos, etc.
 
 ---
 
-### 🌐 Presencia digital con IA
-Landing pages, sitios web y contenido generado y optimizado con IA. Rápido,
-asequible y enfocado en convertir visitas en clientes.
-
----
-
-### 📈 Marketing con IA
-Estrategias de captación de clientes usando herramientas de IA: copy para
-anuncios, automatización de email marketing, análisis de resultados.
-
----
-
 ## ¿Cuánto cuesta?
 
 Depende del proyecto y del alcance. El primer paso es una llamada de
