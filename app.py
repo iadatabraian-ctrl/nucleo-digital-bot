@@ -248,6 +248,7 @@ def recibir_mensaje():
     return "ok", 200
 
 @app.route("/", methods=["GET"])
+@limiter.exempt          # ← esta línea nueva
 def health():
     return "Nucleo Digital Bot — corriendo ✅", 200
 
