@@ -201,6 +201,13 @@ def verificar_webhook():
 @limiter.limit("30 per minute")
 def recibir_mensaje():
     payload_bytes = request.get_data()
+
+    # ── 0. Verificar que el webhook realmente viene de YCloud ────────────
+    firma_header = request.headers.get("YCloud-Signature", "")
+    if not proveedor_activo.verificar_firma(payload_bytes, firma_header):
+        print("[app] Firma inválida — request rechazado (posible spoofing)")
+        return "forbidden", 403
+
     try:
         payload = json.loads(payload_bytes) if payload_bytes else {}
     except Exception:
