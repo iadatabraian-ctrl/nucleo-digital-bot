@@ -27,33 +27,40 @@ _redis = Redis(
     token=os.environ.get("UPSTASH_REDIS_TOKEN", ""),
 )
 
+
+def _norm(numero: str) -> str:
+    """Deja solo dígitos, sin '+' ni espacios — así una misma persona
+    siempre cae en la misma clave de Redis sin importar cómo se haya
+    escrito el número (con o sin '+', con espacios, etc.)."""
+    return re.sub(r"\D", "", numero or "")
+
 # ── Historial de conversación ────────────────────────────────────────────────
 
 def agregar_mensaje(numero: str, rol: str, contenido: str):
-    key = f"hist:{numero}"
+    key = f"hist:{_norm(numero)}"
     _redis.rpush(key, json.dumps({"role": rol, "content": contenido}))
     _redis.ltrim(key, -VENTANA, -1)
 
 def obtener_historial(numero: str) -> list:
-    crudos = _redis.lrange(f"hist:{numero}", 0, -1) or []
+    crudos = _redis.lrange(f"hist:{_norm(numero)}", 0, -1) or []
     return [json.loads(m) for m in crudos]
 
 def limpiar_historial(numero: str):
-    _redis.delete(f"hist:{numero}")
+    _redis.delete(f"hist:{_norm(numero)}")
 
 # ── Pausas ───────────────────────────────────────────────────────────────────
 
 def pausar_conversacion(numero: str, horas: float = PAUSA_HORAS_DEFAULT):
-    _redis.set(f"pausa:{numero}", "temporal", ex=int(horas * 3600))
+    _redis.set(f"pausa:{_norm(numero)}", "temporal", ex=int(horas * 3600))
 
 def pausar_conversacion_indefinida(numero: str):
-    _redis.set(f"pausa:{numero}", "indefinida")
+    _redis.set(f"pausa:{_norm(numero)}", "indefinida")
 
 def reanudar_conversacion(numero: str):
-    _redis.delete(f"pausa:{numero}")
+    _redis.delete(f"pausa:{_norm(numero)}")
 
 def esta_pausada(numero: str) -> bool:
-    return _redis.get(f"pausa:{numero}") is not None
+    return _redis.get(f"pausa:{_norm(numero)}") is not None
 
 # ── Pausa global del bot (comando /pausa y /bot del dueño) ──────────────────
 
@@ -71,12 +78,12 @@ def bot_pausado_global() -> bool:
 # ── Buffer de mensajes seguidos (agrupar antes de responder) ────────────────
 
 def agregar_a_buffer(numero: str, texto: str):
-    key = f"buffer:{numero}"
+    key = f"buffer:{_norm(numero)}"
     _redis.rpush(key, texto)
     _redis.expire(key, 60)  # nunca queda colgado si algo falla
 
 def obtener_y_limpiar_buffer(numero: str) -> list[str]:
-    key = f"buffer:{numero}"
+    key = f"buffer:{_norm(numero)}"
     textos = _redis.lrange(key, 0, -1) or []
     _redis.delete(key)
     return textos
