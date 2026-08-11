@@ -68,6 +68,19 @@ def reanudar_bot_global():
 def bot_pausado_global() -> bool:
     return _redis.get(_PAUSA_GLOBAL_KEY) is not None
 
+# ── Buffer de mensajes seguidos (agrupar antes de responder) ────────────────
+
+def agregar_a_buffer(numero: str, texto: str):
+    key = f"buffer:{numero}"
+    _redis.rpush(key, texto)
+    _redis.expire(key, 60)  # nunca queda colgado si algo falla
+
+def obtener_y_limpiar_buffer(numero: str) -> list[str]:
+    key = f"buffer:{numero}"
+    textos = _redis.lrange(key, 0, -1) or []
+    _redis.delete(key)
+    return textos
+
 # ── Notas de administrador ──────────────────────────────────────────────────
 
 _NOTAS_KEY = "notas_admin"
