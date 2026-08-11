@@ -10,6 +10,8 @@ Webhook de Nexo. Antes de tocar la IA, resuelve en este orden:
 import os
 import re
 import json
+import time
+import threading
 from flask import Flask, request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -31,6 +33,69 @@ limiter = Limiter(
 def _normalizar_numero(numero: str) -> str:
     """Deja solo dígitos, sin '+' ni espacios, para comparar sin importar el formato."""
     return re.sub(r"\D", "", numero or "")
+
+
+# ── Buffer de mensajes seguidos (agrupa antes de responder) ─────────────────
+# Espera 12s de silencio del cliente antes de responder, pero nunca más de
+# 30s desde el primer mensaje del grupo — así una tanda larga de mensajes
+# seguidos no deja al cliente esperando indefinidamente.
+_BUFFER_ESPERA = 12
+_BUFFER_TOPE = 30
+
+_timers: dict[str, threading.Timer] = {}
+_primeros_mensajes: dict[str, float] = {}
+_lock_timers = threading.Lock()
+
+
+def _responder_y_enviar(numero: str, texto_usuario: str):
+    if texto_usuario == "__AUDIO_NO_TRANSCRIPTO__":
+        proveedor_activo.enviar_mensaje(
+            numero, "No pude escuchar el audio 😅 ¿podés escribirlo?"
+        )
+        return
+
+    try:
+        respuesta, resumen_notif = responder(numero, texto_usuario)
+    except Exception as e:
+        print(f"[ERROR en brain.responder] {e}")
+        respuesta = "Disculpá, tuve un problema procesando tu mensaje. Ya te contactamos."
+        resumen_notif = None
+
+    proveedor_activo.enviar_mensaje(numero, respuesta)
+
+    if resumen_notif and config.OWNER_WHATSAPP_NUMBER:
+        proveedor_activo.enviar_mensaje(config.OWNER_WHATSAPP_NUMBER, resumen_notif)
+
+
+def _procesar_buffer(numero: str):
+    with _lock_timers:
+        _timers.pop(numero, None)
+        _primeros_mensajes.pop(numero, None)
+
+    textos = memory.obtener_y_limpiar_buffer(numero)
+    if not textos:
+        return
+    texto_combinado = "\n".join(textos)
+    print(f"[buffer] Procesando {len(textos)} mensaje(s) agrupados de {numero}")
+    _responder_y_enviar(numero, texto_combinado)
+
+
+def _encolar_en_buffer(numero: str, texto: str):
+    memory.agregar_a_buffer(numero, texto)
+    ahora = time.time()
+    with _lock_timers:
+        primer_ts = _primeros_mensajes.setdefault(numero, ahora)
+        timer_previo = _timers.get(numero)
+        if timer_previo:
+            timer_previo.cancel()
+
+        transcurrido = ahora - primer_ts
+        espera = min(_BUFFER_ESPERA, max(0.5, _BUFFER_TOPE - transcurrido))
+
+        t = threading.Timer(espera, _procesar_buffer, args=[numero])
+        t.daemon = True
+        _timers[numero] = t
+        t.start()
 
 
 # ── Comandos de administración (solo desde OWNER_WHATSAPP_NUMBER) ───────────
@@ -172,24 +237,9 @@ def recibir_mensaje():
         print(f"[app] Conversación pausada — no se responde a {numero}")
         return "ok", 200
 
-    # ── 4. Flujo normal ───────────────────────────────────────────────────
-    if texto_usuario == "__AUDIO_NO_TRANSCRIPTO__":
-        proveedor_activo.enviar_mensaje(
-            numero, "No pude escuchar el audio 😅 ¿podés escribirlo?"
-        )
-        return "ok", 200
-
-    try:
-        respuesta, resumen_notif = responder(numero, texto_usuario)
-    except Exception as e:
-        print(f"[ERROR en brain.responder] {e}")
-        respuesta = "Disculpá, tuve un problema procesando tu mensaje. Ya te contactamos."
-        resumen_notif = None
-
-    proveedor_activo.enviar_mensaje(numero, respuesta)
-
-    if resumen_notif and config.OWNER_WHATSAPP_NUMBER:
-        proveedor_activo.enviar_mensaje(config.OWNER_WHATSAPP_NUMBER, resumen_notif)
+    # ── 4. Flujo normal: encolar en el buffer, no responder al toque ────
+    print(f"[buffer] Mensaje de {numero} agregado al buffer: {texto_usuario[:60]}")
+    _encolar_en_buffer(numero, texto_usuario)
 
     return "ok", 200
 
