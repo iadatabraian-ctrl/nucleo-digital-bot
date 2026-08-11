@@ -28,6 +28,11 @@ limiter = Limiter(
 )
 
 
+def _normalizar_numero(numero: str) -> str:
+    """Deja solo dígitos, sin '+' ni espacios, para comparar sin importar el formato."""
+    return re.sub(r"\D", "", numero or "")
+
+
 # ── Comandos de administración (solo desde OWNER_WHATSAPP_NUMBER) ───────────
 
 def _procesar_comando_admin(texto: str) -> str:
@@ -149,7 +154,11 @@ def recibir_mensaje():
         return "ok", 200
 
     # ── 2. Modo admin: mensajes desde el número del dueño ────────────────
-    if config.OWNER_WHATSAPP_NUMBER and numero == config.OWNER_WHATSAPP_NUMBER:
+    es_owner = (
+        config.OWNER_WHATSAPP_NUMBER
+        and _normalizar_numero(numero) == _normalizar_numero(config.OWNER_WHATSAPP_NUMBER)
+    )
+    if es_owner:
         respuesta_admin = _procesar_comando_admin(texto_usuario)
         proveedor_activo.enviar_mensaje(numero, respuesta_admin)
         return "ok", 200
