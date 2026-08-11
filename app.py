@@ -68,9 +68,10 @@ def _responder_y_enviar(numero: str, texto_usuario: str):
 
 
 def _procesar_buffer(numero: str):
+    clave = _normalizar_numero(numero)
     with _lock_timers:
-        _timers.pop(numero, None)
-        _primeros_mensajes.pop(numero, None)
+        _timers.pop(clave, None)
+        _primeros_mensajes.pop(clave, None)
 
     textos = memory.obtener_y_limpiar_buffer(numero)
     if not textos:
@@ -81,11 +82,12 @@ def _procesar_buffer(numero: str):
 
 
 def _encolar_en_buffer(numero: str, texto: str):
+    clave = _normalizar_numero(numero)
     memory.agregar_a_buffer(numero, texto)
     ahora = time.time()
     with _lock_timers:
-        primer_ts = _primeros_mensajes.setdefault(numero, ahora)
-        timer_previo = _timers.get(numero)
+        primer_ts = _primeros_mensajes.setdefault(clave, ahora)
+        timer_previo = _timers.get(clave)
         if timer_previo:
             timer_previo.cancel()
 
@@ -94,7 +96,7 @@ def _encolar_en_buffer(numero: str, texto: str):
 
         t = threading.Timer(espera, _procesar_buffer, args=[numero])
         t.daemon = True
-        _timers[numero] = t
+        _timers[clave] = t
         t.start()
 
 
