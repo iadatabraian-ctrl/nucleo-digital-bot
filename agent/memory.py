@@ -55,6 +55,19 @@ def reanudar_conversacion(numero: str):
 def esta_pausada(numero: str) -> bool:
     return _redis.get(f"pausa:{numero}") is not None
 
+# ── Pausa global del bot (comando /pausa y /bot del dueño) ──────────────────
+
+_PAUSA_GLOBAL_KEY = "bot_pausado_global"
+
+def pausar_bot_global():
+    _redis.set(_PAUSA_GLOBAL_KEY, "1")
+
+def reanudar_bot_global():
+    _redis.delete(_PAUSA_GLOBAL_KEY)
+
+def bot_pausado_global() -> bool:
+    return _redis.get(_PAUSA_GLOBAL_KEY) is not None
+
 # ── Notas de administrador ──────────────────────────────────────────────────
 
 _NOTAS_KEY = "notas_admin"
