@@ -9,7 +9,11 @@ No hace falta saber de tecnología — nosotros nos ocupamos de todo.
 
 ---
 
-## Nuestros servicios
+## Nuestros 4 servicios
+
+Son exactamente 4: Agentes de WhatsApp con IA, Automatización de procesos,
+Software a medida, y Páginas web. Si el cliente pregunta qué servicios
+ofrecen, nombrá los 4 — ni menos ni de más. No te saltees ninguno.
 
 ### 🤖 Agentes de WhatsApp con IA
 Automatizamos la atención por WhatsApp: el bot responde consultas, toma pedidos,
