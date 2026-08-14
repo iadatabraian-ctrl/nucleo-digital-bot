@@ -83,35 +83,31 @@ def verificar_firma(payload_bytes: bytes, firma_header: str, secret: str | None 
 
 # ── Transcripción de audio ───────────────────────────────────────────────────
 
-def _transcribir_audio(media_id: str) -> str | None:
+def _transcribir_audio(link: str, mime_type: str = "audio/ogg") -> str | None:
     """
-    Descarga el audio de YCloud y lo transcribe con Groq Whisper.
+    Descarga el audio de YCloud (usando el link firmado que ya viene en el
+    webhook del mensaje entrante) y lo transcribe con Groq Whisper.
     Retorna el texto o None si falla.
+
+    Nota: YCloud NO tiene un endpoint separado para "consultar" la URL de
+    un media a partir de su id (por eso el GET a /whatsapp/media/{id} daba
+    404). El link de descarga ya viene armado y firmado dentro del propio
+    payload del webhook, en audio.link -- solo hay que pegarle un GET con
+    el header X-API-Key.
     """
     groq_key = config.GROQ_API_KEY
     if not groq_key:
         print("[ycloud] GROQ_API_KEY no configurada, no se transcribe audio")
         return None
 
+    if not link:
+        print("[ycloud] No hay link de audio en el mensaje entrante")
+        return None
+
     try:
-        # 1. Obtener URL de descarga del archivo
+        # 1. Descargar el archivo de audio directo del link firmado
         headers = {"X-API-Key": config.YCLOUD_API_KEY}
-        media_resp = requests.get(
-            f"{_BASE_URL}/whatsapp/media/{media_id}",
-            headers=headers,
-            timeout=15,
-        )
-        media_resp.raise_for_status()
-        media_data = media_resp.json()
-        url_descarga = media_data.get("url")
-        mime_type    = media_data.get("mimeType", "audio/ogg")
-
-        if not url_descarga:
-            print(f"[ycloud] No se obtuvo URL de descarga para media {media_id}")
-            return None
-
-        # 2. Descargar el archivo de audio
-        audio_resp = requests.get(url_descarga, timeout=30)
+        audio_resp = requests.get(link, headers=headers, timeout=30)
         audio_resp.raise_for_status()
 
         extension = "ogg"
@@ -239,8 +235,9 @@ def parsear_mensaje_entrante(payload: dict) -> dict | None:
     # Audio (voz)
     if tipo == "audio":
         audio = msg.get("audio", {})
-        media_id = audio.get("id", "")
-        texto_transcrito = _transcribir_audio(media_id) if media_id else None
+        link_audio = audio.get("link", "")
+        mime_audio = audio.get("mime_type", "audio/ogg")
+        texto_transcrito = _transcribir_audio(link_audio, mime_audio) if link_audio else None
         if not texto_transcrito:
             texto_transcrito = "[Audio no transcrito]"
         return {
