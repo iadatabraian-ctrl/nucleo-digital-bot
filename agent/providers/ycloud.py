@@ -57,17 +57,28 @@ _CATALOGO_SEMILLA: dict[str, str] = {
 def verificar_firma(payload_bytes: bytes, firma_header: str, secret: str | None = None) -> bool:
     """
     Verifica que el webhook realmente proviene de YCloud.
-    YCloud envía el HMAC-SHA256 del cuerpo en el header 'YCloud-Signature'.
+    Formato real del header: 'YCloud-Signature: t={timestamp},s={firma}'.
+    La firma se calcula como HMAC-SHA256('{timestamp}.{cuerpo}', secret).
     El secreto puede pasarse como argumento o se lee de config.YCLOUD_WEBHOOK_SECRET.
     """
     secreto = secret or config.YCLOUD_WEBHOOK_SECRET
     if not secreto:
         # Sin secreto configurado, aceptar todo (solo para desarrollo)
         return True
+    if not firma_header:
+        return False
+    try:
+        partes = dict(p.split("=", 1) for p in firma_header.split(","))
+        timestamp = partes["t"]
+        firma_recibida = partes["s"]
+    except (KeyError, ValueError):
+        return False
+
+    payload_firmado = f"{timestamp}.".encode() + payload_bytes
     esperada = hmac.new(
-        secreto.encode(), payload_bytes, hashlib.sha256
+        secreto.encode(), payload_firmado, hashlib.sha256
     ).hexdigest()
-    return hmac.compare_digest(esperada, firma_header.lower().replace("sha256=", ""))
+    return hmac.compare_digest(esperada, firma_recibida)
 
 
 # ── Transcripción de audio ───────────────────────────────────────────────────
@@ -204,127 +215,4 @@ def parsear_mensaje_entrante(payload: dict) -> dict | None:
 
     numero = msg.get("from", "")
     wamid  = msg.get("wamid", "") or msg.get("id", "")
-    tipo   = msg.get("type", "unknown")
-
-    if not numero:
-        return None
-
-    # Deduplicar
-    if wamid and not _marcar_wamid(wamid):
-        print(f"[ycloud] WAMID duplicado ignorado: {wamid}")
-        return None
-
-    # Texto plano
-    if tipo == "text":
-        cuerpo = msg.get("text", {}).get("body", "")
-        return {
-            "numero": numero,
-            "wamid": wamid,
-            "tipo": "texto",
-            "texto": cuerpo.strip(),
-            "es_eco": False,
-        }
-
-    # Audio (voz)
-    if tipo == "audio":
-        audio = msg.get("audio", {})
-        media_id = audio.get("id", "")
-        texto_transcrito = _transcribir_audio(media_id) if media_id else None
-        if not texto_transcrito:
-            texto_transcrito = "[Audio no transcrito]"
-        return {
-            "numero": numero,
-            "wamid": wamid,
-            "tipo": "audio",
-            "texto": texto_transcrito,
-            "es_eco": False,
-        }
-
-    # Pedido de catálogo
-    if tipo == "order":
-        from agent import memory as mem
-        catalogo_redis = mem.obtener_catalogo()
-        catalogo = {**_CATALOGO_SEMILLA, **catalogo_redis}
-        orden = msg.get("order", {})
-        items = orden.get("product_items", [])
-        lineas = []
-        for item in items:
-            pid      = item.get("product_retailer_id", "")
-            cantidad = item.get("quantity", 1)
-            nombre   = catalogo.get(pid, pid)
-            lineas.append(f"{cantidad}x {nombre}")
-        resumen = "Pedido del catálogo: " + ", ".join(lineas) if lineas else "Pedido de catálogo"
-        return {
-            "numero": numero,
-            "wamid": wamid,
-            "tipo": "catalogo",
-            "texto": resumen,
-            "es_eco": False,
-        }
-
-    print(f"[ycloud] Tipo de mensaje no manejado: {tipo}")
-    return {
-        "numero": numero,
-        "wamid": wamid,
-        "tipo": "desconocido",
-        "texto": f"[Mensaje de tipo '{tipo}' no soportado]",
-        "es_eco": False,
-    }
-
-
-# ── Envío de mensajes ────────────────────────────────────────────────────────
-
-def enviar_mensaje(numero: str, texto: str) -> bool:
-    """
-    Envía un mensaje de texto a través de YCloud.
-    Retorna True si se envió correctamente.
-    """
-    if not config.YCLOUD_API_KEY:
-        print("[ycloud] YCLOUD_API_KEY no configurada")
-        return False
-
-    from_number = config.YCLOUD_PHONE_NUMBER
-
-    try:
-        resp = requests.post(
-            f"{_BASE_URL}/whatsapp/messages",
-            headers={
-                "X-API-Key": config.YCLOUD_API_KEY,
-                "Content-Type": "application/json",
-            },
-            json={
-                "from": from_number,
-                "to": numero,
-                "type": "text",
-                "text": {"body": texto},
-            },
-            timeout=15,
-        )
-        resp.raise_for_status()
-        print(f"[ycloud] Mensaje enviado a {numero}: {texto[:80]}")
-        return True
-    except Exception as e:
-        print(f"[ycloud] Error enviando mensaje a {numero}: {e}")
-        return False
-
-
-# ── Clase de compatibilidad (requerida por agent/providers/__init__.py) ──────
-
-class YCloudProvider:
-    """
-    Wrapper de clase sobre las funciones del módulo.
-    Permite que __init__.py haga: proveedor_activo = YCloudProvider()
-    sin cambiar nada más.
-    """
-
-    def verificar_firma(self, payload_bytes: bytes, firma_header: str) -> bool:
-        return verificar_firma(payload_bytes, firma_header)
-
-    def parsear_eco_manual(self, payload: dict) -> str | None:
-        return parsear_eco_manual(payload)
-
-    def parsear_mensaje_entrante(self, payload: dict) -> dict | None:
-        return parsear_mensaje_entrante(payload)
-
-    def enviar_mensaje(self, numero: str, texto: str) -> bool:
-        return enviar_mensaje(numero, texto)
+    tipo   = msg.get("t
